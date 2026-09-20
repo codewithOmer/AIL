@@ -1,4 +1,4 @@
-"""AIL memory adapter backed by PersonalAI's in-memory fakes.
+"""AIL memory adapter backed by PersonalAI's in-memory store, JSON-persisted.
 
 This adapter wires PersonalAI's ``InMemoryMemoryStore`` (dot-product similarity
 search) behind AIL's own ``MemoryStore`` interface. It is the first integration
@@ -11,19 +11,26 @@ does not rank the matching memory first). AIL therefore adapts
 similarity tracks shared words. Storage/search still delegate to PersonalAI's
 in-memory store; only the embedding function is AIL-owned.
 
-The async PersonalAI fakes are bridged to a synchronous AIL API via
-``asyncio.run()``.
+Persistence: every stored memory is mirrored to a small JSON file (AIL-owned,
+default ``data/memory.json``) so long-term memory survives process restarts.
+Embeddings are *not* serialised — they are recomputed deterministically on
+load from the stored text. IDs, text, kind, confidence and ``created_at`` are
+preserved across reloads.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import math
 import re
 import sys
 import uuid
 import zlib
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # PersonalAI path setup (read-only dependency — never modified)
@@ -41,16 +48,18 @@ from personalai_contracts.testing import (  # noqa: E402
 
 from memory.interface import Memory, MemoryStore  # noqa: E402
 
+_LOGGER = logging.getLogger(__name__)
+
 _EMBED_DIM = 128
 _TOKEN_RE = re.compile(r"\w+")
 
+# ---------------------------------------------------------------------------
+# Embedding provider (PersonalAI test double, embed() AIL-owned)
+# ---------------------------------------------------------------------------
+
 
 class _TokenFakeProvider(FakeModelProvider):
-    """FakeModelProvider whose embed() produces token-overlap vectors.
-
-    Only ``embed`` is overridden; everything else inherits from PersonalAI's
-    fake so this stays a PersonalAI test double.
-    """
+    """FakeModelProvider whose embed() produces token-overlap vectors."""
 
     async def embed(self, texts, model=""):
         from personalai_contracts.ports.model_provider import EmbeddingResult
@@ -63,11 +72,7 @@ class _TokenFakeProvider(FakeModelProvider):
 
 
 def _token_overlap_vector(text: str) -> list[float]:
-    """Deterministic unit-norm bag-of-token vector (feature hashing).
-
-    Shared words between query and memory produce overlapping dimensions, so
-    the dot-product used by ``InMemoryMemoryStore`` ranks by word overlap.
-    """
+    """Deterministic unit-norm bag-of-token vector (feature hashing)."""
     vec = [0.0] * _EMBED_DIM
     for token in _TOKEN_RE.findall(text.lower()):
         slot = zlib.crc32(token.encode("utf-8")) % _EMBED_DIM
@@ -76,23 +81,23 @@ def _token_overlap_vector(text: str) -> list[float]:
     return [x / norm for x in vec]
 
 
-# ---------------------------------------------------------------------------
-# Adapter
-# ---------------------------------------------------------------------------
-
 _PROVIDER = _TokenFakeProvider(name="ail-embedding")
 _MODEL = "ail-fake"
 
+# ---------------------------------------------------------------------------
+# Default persistence location (AIL-owned)
+# ---------------------------------------------------------------------------
+_AIL_ROOT = Path(__file__).resolve().parents[2]
+_DEFAULT_MEMORY_FILE = _AIL_ROOT / "data" / "memory.json"
+
 
 class PersonalAIMemoryStore(MemoryStore):
-    """In-memory memory store that delegates to PersonalAI's in-memory store.
+    """In-memory memory store that persists to a JSON snapshot file."""
 
-    This is *not* a production adapter — it exists to prove the integration
-    boundary works and to back unit tests without any external service.
-    """
-
-    def __init__(self) -> None:
+    def __init__(self, memory_file: str | Path | None = None) -> None:
         self._store = InMemoryMemoryStore()
+        self._memory_file = Path(memory_file or _DEFAULT_MEMORY_FILE)
+        self._load_from_file()
 
     # -- helpers ----------------------------------------------------------
 
@@ -102,6 +107,44 @@ class PersonalAIMemoryStore(MemoryStore):
     def _embed(self, text: str):
         result = self._run(_PROVIDER.embed([text], _MODEL))
         return result.vectors[0]
+
+    def _load_from_file(self) -> None:
+        if not self._memory_file.exists():
+            return
+        try:
+            with open(self._memory_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            for item in data:
+                embedding = _token_overlap_vector(item["text"])
+                self._run(
+                    self._store.add(
+                        id=item["id"],
+                        kind=MemoryKind(item["kind"]),
+                        text=item["text"],
+                        embedding=embedding,
+                        confidence=item["confidence"],
+                        source=item.get("source", {"origin": "ail"}),
+                    )
+                )
+        except (json.JSONDecodeError, KeyError) as e:
+            _LOGGER.warning("Failed to load memory from %s: %s", self._memory_file, e)
+
+    def _save_to_file(self) -> None:
+        self._memory_file.parent.mkdir(parents=True, exist_ok=True)
+        items = self._run(self._store.list())
+        data = [
+            {
+                "id": m.id,
+                "kind": m.kind.value,
+                "text": m.text,
+                "confidence": m.confidence,
+                "source": m.source,
+                "created_at": m.created_at.isoformat(),
+            }
+            for m in items
+        ]
+        with open(self._memory_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
 
     # -- MemoryStore interface -------------------------------------------
 
@@ -123,6 +166,7 @@ class PersonalAIMemoryStore(MemoryStore):
                 source={"origin": "ail"},
             )
         )
+        self._save_to_file()
         return Memory(
             id=item.id,
             text=item.text,
@@ -173,3 +217,4 @@ class PersonalAIMemoryStore(MemoryStore):
 
     def delete(self, memory_id: str) -> None:
         self._run(self._store.delete(memory_id))
+        self._save_to_file()

@@ -3,13 +3,24 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
+import uuid
 from pathlib import Path
 
 # Ensure AIL root is importable.
 AIL_ROOT = str(Path(__file__).resolve().parents[1])
 if AIL_ROOT not in sys.path:
     sys.path.insert(0, AIL_ROOT)
+
+# Isolated temp dir so these tests never read/write the default
+# persistent memory file (data/memory.json).
+_TEST_DIR = tempfile.TemporaryDirectory()
+
+
+def _make_store() -> PersonalAIMemoryStore:
+    path = Path(_TEST_DIR.name) / f"memory-{uuid.uuid4().hex}.json"
+    return PersonalAIMemoryStore(memory_file=path)
 
 from memory.flow import (  # noqa: E402
     apply_context,
@@ -94,13 +105,13 @@ class TestExtractExplicitFacts(unittest.TestCase):
 
 class TestStoreIfNew(unittest.TestCase):
     def test_stores_new_fact(self) -> None:
-        store = PersonalAIMemoryStore()
+        store = _make_store()
         mem = store_if_new(store, "The user's name is Omer.")
         self.assertIsNotNone(mem)
         self.assertEqual(store.list_all()[0].text, "The user's name is Omer.")
 
     def test_does_not_duplicate_identical_fact(self) -> None:
-        store = PersonalAIMemoryStore()
+        store = _make_store()
         store_if_new(store, "The user's name is Omer.")
         second = store_if_new(store, "The user's name is Omer.")
         self.assertIsNone(second)

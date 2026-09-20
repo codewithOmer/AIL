@@ -7,7 +7,9 @@ No database, no external model, no OI integration.
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
+import uuid
 from pathlib import Path
 
 # Ensure AIL root is importable.
@@ -18,9 +20,14 @@ if AIL_ROOT not in sys.path:
 from memory.interface import Memory, MemoryStore  # noqa: E402
 from integrations.personalai.memory import PersonalAIMemoryStore  # noqa: E402
 
+# Isolated temp dir so these tests never read/write the default
+# persistent memory file (data/memory.json).
+_TEST_DIR = tempfile.TemporaryDirectory()
+
 
 def _make_store() -> MemoryStore:
-    return PersonalAIMemoryStore()
+    path = Path(_TEST_DIR.name) / f"memory-{uuid.uuid4().hex}.json"
+    return PersonalAIMemoryStore(memory_file=path)
 
 
 class TestStoreAndRecall(unittest.TestCase):
