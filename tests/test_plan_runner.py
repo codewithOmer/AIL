@@ -27,6 +27,7 @@ from interfaces.planning import (  # noqa: E402
     Goal,
     Plan,
     PlanStep,
+    Replanner,
     StepStatus,
 )
 from interfaces.recovery import RecoveryStrategy  # noqa: E402
@@ -71,6 +72,16 @@ class ExplodingClient:
         raise RuntimeError("executor exploded")
 
 
+class FixedReplanner(Replanner):
+    def __init__(self, replacement: Plan | None) -> None:
+        self.replacement = replacement
+        self.calls: list[tuple[Plan, ExecutionReport]] = []
+
+    def replan(self, plan: Plan, report: ExecutionReport) -> Plan | None:
+        self.calls.append((plan, report))
+        return self.replacement
+
+
 class PlanRunnerTestBase(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.mkdtemp()
@@ -85,6 +96,7 @@ class PlanRunnerTestBase(unittest.TestCase):
         client: Any,
         strategy: RecoveryStrategy | None = None,
         default_max_attempts: int = 2,
+        replanner: Replanner | None = None,
     ) -> PlanRunner:
         return PlanRunner(
             planner=DeterministicPlanner(),
@@ -93,6 +105,7 @@ class PlanRunnerTestBase(unittest.TestCase):
             strategy=strategy,
             base_dir=str(self.temp_dir),
             default_max_attempts=default_max_attempts,
+            replanner=replanner,
         )
 
     def run_steps(self, client: Any, steps: tuple[PlanStep, ...]) -> ExecutionReport:
@@ -385,6 +398,132 @@ class TestPlanRunnerPolicy(PlanRunnerTestBase):
         self.assertTrue(report.passed)
         self.assertEqual(captured["goal"], goal)
         self.assertEqual(captured["thread_id"], "thread-42")
+
+
+class TestPlanRunnerReplanning(PlanRunnerTestBase):
+    def replacement_plan(self, goal: Goal | None = None) -> Plan:
+        return Plan(
+            goal=goal or Goal("replacement goal"),
+            steps=(self.step("replacement", "replacement.txt", TEXT_B),),
+        )
+
+    def test_failed_plan_replans_once_and_replacement_passes(self) -> None:
+        client = ScriptedClient(
+            {
+                "a.txt": (99, self.temp_dir / "a.txt", TEXT_A),
+                "replacement.txt": (1, self.temp_dir / "replacement.txt", TEXT_B),
+            }
+        )
+        initial = Plan(
+            goal=Goal("initial goal"),
+            steps=(self.step("initial", "a.txt", TEXT_A),),
+        )
+        replanner = FixedReplanner(self.replacement_plan())
+        report = self.runner(client, replanner=replanner).run_plan(initial)
+
+        self.assertTrue(report.passed)
+        self.assertEqual(len(replanner.calls), 1)
+        self.assertEqual(len(report.attempts), 2)
+        self.assertFalse(report.attempts[0].passed)
+        self.assertTrue(report.attempts[1].passed)
+        self.assertEqual(report.steps, report.attempts[1].steps)
+        self.assertEqual(report.steps[0].step_id, "replacement")
+
+    def test_replanner_receives_exact_failed_plan_and_report(self) -> None:
+        client = ScriptedClient({})
+        initial = Plan(
+            goal=Goal("initial goal"),
+            steps=(self.step("initial", "a.txt", TEXT_A),),
+        )
+        replanner = FixedReplanner(None)
+        report = self.runner(client, replanner=replanner).run_plan(initial)
+
+        self.assertFalse(report.passed)
+        self.assertEqual(len(replanner.calls), 1)
+        received_plan, received_report = replanner.calls[0]
+        self.assertIs(received_plan, initial)
+        self.assertIs(received_report, report)
+
+    def test_passing_initial_plan_does_not_replan(self) -> None:
+        target = self.temp_dir / "a.txt"
+        replanner = FixedReplanner(self.replacement_plan())
+        report = self.runner(
+            ScriptedClient({"a.txt": (1, target, TEXT_A)}),
+            replanner=replanner,
+        ).run_plan(
+            Plan(
+                goal=Goal("initial"),
+                steps=(self.step("initial", "a.txt", TEXT_A),),
+            )
+        )
+
+        self.assertTrue(report.passed)
+        self.assertEqual(replanner.calls, [])
+        self.assertEqual(len(report.attempts), 1)
+
+    def test_no_replanner_preserves_failed_behavior(self) -> None:
+        report = self.run_steps(ScriptedClient({}), (self.step("initial", "a.txt", TEXT_A),))
+
+        self.assertFalse(report.passed)
+        self.assertEqual(len(report.attempts), 1)
+
+    def test_replanner_returning_none_does_not_execute_replacement(self) -> None:
+        client = ScriptedClient({})
+        replanner = FixedReplanner(None)
+        report = self.runner(client, replanner=replanner).run_plan(
+            Plan(goal=Goal("initial"), steps=(self.step("initial", "a.txt", TEXT_A),))
+        )
+
+        self.assertFalse(report.passed)
+        self.assertEqual(len(replanner.calls), 1)
+        self.assertEqual(len(report.attempts), 1)
+        self.assertEqual(len(client.calls), 2)
+        self.assertTrue(all("replacement.txt" not in call for call in client.calls))
+
+    def test_failed_replacement_does_not_replan_again(self) -> None:
+        replanner = FixedReplanner(self.replacement_plan())
+        report = self.runner(
+            ScriptedClient({}),
+            replanner=replanner,
+        ).run_plan(Plan(goal=Goal("initial"), steps=(self.step("initial", "a.txt", TEXT_A),)))
+
+        self.assertFalse(report.passed)
+        self.assertEqual(len(replanner.calls), 1)
+        self.assertEqual(len(report.attempts), 2)
+        self.assertFalse(report.attempts[1].passed)
+
+    def test_step_recovery_finishes_before_replanning(self) -> None:
+        client = ScriptedClient(
+            {
+                "a.txt": (3, self.temp_dir / "a.txt", TEXT_A),
+                "replacement.txt": (1, self.temp_dir / "replacement.txt", TEXT_B),
+            }
+        )
+        replanner = FixedReplanner(self.replacement_plan())
+        report = self.runner(client, replanner=replanner).run_plan(
+            Plan(goal=Goal("initial"), steps=(self.step("initial", "a.txt", TEXT_A),))
+        )
+
+        self.assertTrue(report.passed)
+        self.assertEqual(len(replanner.calls), 1)
+        initial_report = replanner.calls[0][1]
+        self.assertEqual(initial_report.attempts[0].steps[0].recovery.attempts, 2)
+        self.assertEqual(client.counts["a.txt"], 2)
+
+    def test_invalid_replacement_is_not_executed(self) -> None:
+        invalid = Plan(goal=Goal("invalid"), steps=())
+        replanner = FixedReplanner(invalid)
+        client = ScriptedClient({})
+        report = self.runner(
+            client,
+            replanner=replanner,
+        ).run_plan(Plan(goal=Goal("initial"), steps=(self.step("initial", "a.txt", TEXT_A),)))
+
+        self.assertFalse(report.passed)
+        self.assertEqual(len(replanner.calls), 1)
+        self.assertEqual(len(report.attempts), 1)
+        self.assertEqual(len(client.calls), 2)
+        self.assertTrue(all("replacement.txt" not in call for call in client.calls))
 
 
 if __name__ == "__main__":

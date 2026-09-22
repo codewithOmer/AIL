@@ -21,7 +21,9 @@ from interfaces.planning import (
     ExecutionReport,
     Goal,
     Plan,
+    PlanAttempt,
     Planner,
+    Replanner,
     StepResult,
     StepStatus,
 )
@@ -46,6 +48,7 @@ class PlanRunner:
         base_dir: str = ".",
         default_max_attempts: int = 2,
         thread_id: str | None = None,
+        replanner: Replanner | None = None,
     ) -> None:
         self.planner = planner
         self.client = client
@@ -54,14 +57,40 @@ class PlanRunner:
         self.base_dir = base_dir
         self.default_max_attempts = default_max_attempts
         self.thread_id = thread_id
+        self.replanner = replanner
 
     def run(self, goal: Goal) -> ExecutionReport:
         """Plan *goal*, execute its steps, and return the final report."""
         plan = self.planner.plan(goal)
-        return self.run_plan(plan)
+        return self._run_with_replanning(plan)
 
     def run_plan(self, plan: Plan) -> ExecutionReport:
         """Execute an existing :class:`Plan` and return the final report."""
+        return self._run_with_replanning(plan)
+
+    def _run_with_replanning(self, plan: Plan) -> ExecutionReport:
+        initial = self._execute_plan(plan)
+        if initial.passed or self.replanner is None:
+            return initial
+
+        replacement = self.replanner.replan(plan, initial)
+        if replacement is None:
+            return initial
+
+        try:
+            validate_plan(replacement)
+        except ValueError:
+            return initial
+
+        final = self._execute_plan(replacement)
+        return ExecutionReport(
+            goal=final.goal,
+            passed=final.passed,
+            steps=final.steps,
+            attempts=initial.attempts + final.attempts,
+        )
+
+    def _execute_plan(self, plan: Plan) -> ExecutionReport:
         validate_plan(plan)
 
         results: list[StepResult] = []
@@ -133,8 +162,19 @@ class PlanRunner:
                     )
                 )
 
-        return ExecutionReport(
+        report = ExecutionReport(
             goal=plan.goal,
             passed=all(r.status is StepStatus.PASSED for r in results),
             steps=tuple(results),
+        )
+        attempt = PlanAttempt(
+            plan=plan,
+            passed=report.passed,
+            steps=report.steps,
+        )
+        return ExecutionReport(
+            goal=report.goal,
+            passed=report.passed,
+            steps=report.steps,
+            attempts=(attempt,),
         )

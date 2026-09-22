@@ -83,6 +83,15 @@ class StepResult:
 
 
 @dataclass(frozen=True)
+class PlanAttempt:
+    """Outcome of executing one complete plan."""
+
+    plan: Plan
+    passed: bool
+    steps: tuple[StepResult, ...]
+
+
+@dataclass(frozen=True)
 class ExecutionReport:
     """Final outcome of running a :class:`Plan`.
 
@@ -92,3 +101,13 @@ class ExecutionReport:
     goal: Goal
     passed: bool
     steps: tuple[StepResult, ...]
+    attempts: tuple[PlanAttempt, ...] = ()
+
+
+class Replanner(ABC):
+    """Contract for producing one replacement plan after failure."""
+
+    @abstractmethod
+    def replan(self, plan: Plan, report: ExecutionReport) -> Plan | None:
+        """Return one replacement plan, or None to stop."""
+        raise NotImplementedError
