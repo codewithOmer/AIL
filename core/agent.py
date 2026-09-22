@@ -1,4 +1,14 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from interfaces.llm import LLM
+from interfaces.planning import ExecutionReport, Goal
+from memory.flow import apply_context
+from memory.interface import MemoryStore
+
+if TYPE_CHECKING:
+    from core.plan_runner import PlanRunner
 
 
 class MockLLM(LLM):
@@ -9,10 +19,34 @@ class MockLLM(LLM):
 
 
 class Agent:
-    """AIL's initial reasoning/orchestration layer."""
+    """Thin orchestration layer over memory recall and plan execution."""
 
-    def __init__(self, llm: LLM):
-        self.llm = llm
+    def __init__(
+        self,
+        memory_store: MemoryStore | LLM,
+        plan_runner: PlanRunner | None = None,
+    ) -> None:
+        # Keep the original constructor shape working for mock mode.
+        self.llm = memory_store if plan_runner is None else None
+        self.memory_store = memory_store if plan_runner is not None else None
+        self.plan_runner = plan_runner
 
     def respond(self, user_input: str) -> str:
+        if self.llm is None:
+            raise RuntimeError("respond() is only available in legacy LLM mode")
         return self.llm.generate(user_input)
+
+    def run(self, goal: str | Goal, *, top_k: int = 3) -> ExecutionReport:
+        """Recall context, execute the contextual goal, and return its report."""
+        if self.memory_store is None or self.plan_runner is None:
+            raise RuntimeError("run() requires a memory store and plan runner")
+
+        original_goal = Goal(goal) if isinstance(goal, str) else goal
+        recalled = self.memory_store.recall(
+            original_goal.description,
+            top_k=top_k,
+        )
+        contextual_goal = Goal(
+            apply_context(original_goal.description, recalled)
+        )
+        return self.plan_runner.run(contextual_goal)
