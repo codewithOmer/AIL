@@ -10,7 +10,11 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any
+from enum import Enum
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from interfaces.recovery import RecoveryResult
 
 
 @dataclass(frozen=True)
@@ -52,3 +56,39 @@ class Planner(ABC):
     def plan(self, goal: Goal) -> Plan:
         """Return a deterministic plan for *goal* without executing anything."""
         raise NotImplementedError
+
+
+class StepStatus(Enum):
+    """Outcome of one planned step under the runner."""
+
+    PENDING = "pending"
+    PASSED = "passed"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+@dataclass(frozen=True)
+class StepResult:
+    """Runner outcome for a single :class:`PlanStep`.
+
+    ``recovery`` preserves the bounded loop's ``RecoveryResult`` verbatim; it
+    is ``None`` for steps that never executed (skipped or failed early).
+    """
+
+    step_id: str
+    action: str
+    status: StepStatus
+    recovery: "RecoveryResult | None" = None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class ExecutionReport:
+    """Final outcome of running a :class:`Plan`.
+
+    ``passed`` is True only when every step PASSED.
+    """
+
+    goal: Goal
+    passed: bool
+    steps: tuple[StepResult, ...]

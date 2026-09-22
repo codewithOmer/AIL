@@ -1,0 +1,391 @@
+"""Tests for the AIL Plan Runner (Milestone 2G).
+
+The runner composes the existing PLAN → EXECUTE → VERIFY → RECOVER pieces.
+Fake planners and fake executor clients manipulate the real filesystem so the
+independent ``FilesystemVerifier`` decides every outcome; the executor's
+response text is never trusted.
+"""
+
+from __future__ import annotations
+
+import shutil
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from typing import Any
+
+# Ensure AIL root is importable.
+AIL_ROOT = str(Path(__file__).resolve().parents[1])
+if AIL_ROOT not in sys.path:
+    sys.path.insert(0, AIL_ROOT)
+
+from core.plan_runner import PlanRunner  # noqa: E402
+from core.planner import DeterministicPlanner  # noqa: E402
+from interfaces.planning import (  # noqa: E402
+    ExecutionReport,
+    Goal,
+    Plan,
+    PlanStep,
+    StepStatus,
+)
+from interfaces.recovery import RecoveryStrategy  # noqa: E402
+from tools.fs_verifier import FileExpectation, FilesystemVerifier  # noqa: E402
+
+TEXT_A = "content a"
+TEXT_B = "content b"
+
+
+class ScriptedClient:
+    """Writes a real file once its key has been seen N times.
+
+    ``script`` maps a substring of the message to
+    ``(succeed_on, target_path, text)``.  The Nth call whose message contains
+    the key writes *text* to *target_path*; earlier calls do nothing, so the
+    independent verifier decides the outcome.
+    """
+
+    def __init__(self, script: dict[str, tuple[int, Path, str]]) -> None:
+        self.script = script
+        self.calls: list[str] = []
+        self.counts: dict[str, int] = {}
+
+    def send_message(
+        self, message: str, thread_id: str | None = None, timeout: float | None = None
+    ) -> str:
+        self.calls.append(message)
+        for key, (succeed_on, target, text) in self.script.items():
+            if key in message:
+                self.counts[key] = self.counts.get(key, 0) + 1
+                if self.counts[key] >= succeed_on:
+                    target.write_text(text)
+        return "fake executor response text"
+
+
+class ExplodingClient:
+    """Raises immediately, simulating an executor crash."""
+
+    def send_message(
+        self, message: str, thread_id: str | None = None, timeout: float | None = None
+    ) -> str:
+        raise RuntimeError("executor exploded")
+
+
+class PlanRunnerTestBase(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.mkdtemp()
+        self.temp_dir = Path(self._tmp)
+        self.verifier = FilesystemVerifier()
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self._tmp)
+
+    def runner(
+        self,
+        client: Any,
+        strategy: RecoveryStrategy | None = None,
+        default_max_attempts: int = 2,
+    ) -> PlanRunner:
+        return PlanRunner(
+            planner=DeterministicPlanner(),
+            client=client,
+            verifier=self.verifier,
+            strategy=strategy,
+            base_dir=str(self.temp_dir),
+            default_max_attempts=default_max_attempts,
+        )
+
+    def run_steps(self, client: Any, steps: tuple[PlanStep, ...]) -> ExecutionReport:
+        plan = Plan(goal=Goal("fake goal"), steps=steps)
+        return self.runner(client).run_plan(plan)
+
+    def step(
+        self,
+        sid: str,
+        filename: str,
+        text: str,
+        **kwargs: Any,
+    ) -> PlanStep:
+        """A step whose action mentions *filename* and expects it to exist."""
+        return PlanStep(
+            id=sid,
+            action=f"write {filename}",
+            expectations=(
+                FileExpectation(filename, exists=True, contains=text),
+            ),
+            **kwargs,
+        )
+
+
+class TestPlanRunnerBasics(PlanRunnerTestBase):
+    def test_all_steps_pass(self) -> None:
+        target = self.temp_dir / "a.txt"
+        client = ScriptedClient({"a.txt": (1, target, TEXT_A)})
+        report = self.run_steps(client, (self.step("1", "a.txt", TEXT_A),))
+        self.assertTrue(report.passed)
+        self.assertEqual(report.goal, Goal("fake goal"))
+        self.assertEqual(len(report.steps), 1)
+        self.assertEqual(report.steps[0].status, StepStatus.PASSED)
+        self.assertTrue(target.exists())
+
+    def test_multiple_steps_execute_in_tuple_order(self) -> None:
+        a = self.temp_dir / "a.txt"
+        b = self.temp_dir / "b.txt"
+        client = ScriptedClient(
+            {
+                "a.txt": (1, a, TEXT_A),
+                "b.txt": (1, b, TEXT_B),
+            }
+        )
+        report = self.run_steps(
+            client,
+            (
+                self.step("1", "a.txt", TEXT_A),
+                self.step("2", "b.txt", TEXT_B),
+            ),
+        )
+        self.assertTrue(report.passed)
+        self.assertEqual(len(client.calls), 2)
+        self.assertIn("a.txt", client.calls[0])
+        self.assertIn("b.txt", client.calls[1])
+        self.assertEqual(
+            [s.status for s in report.steps],
+            [StepStatus.PASSED, StepStatus.PASSED],
+        )
+
+    def test_failed_step_recovers_and_becomes_passed(self) -> None:
+        target = self.temp_dir / "a.txt"
+        client = ScriptedClient({"a.txt": (2, target, TEXT_A)})
+        report = self.run_steps(client, (self.step("1", "a.txt", TEXT_A),))
+        self.assertTrue(report.passed)
+        self.assertEqual(report.steps[0].status, StepStatus.PASSED)
+        self.assertIsNotNone(report.steps[0].recovery)
+        assert report.steps[0].recovery is not None
+        self.assertEqual(report.steps[0].recovery.attempts, 2)
+        self.assertEqual(len(report.steps[0].recovery.history), 2)
+        self.assertEqual(client.counts["a.txt"], 2)
+
+    def test_permanently_failed_step_becomes_failed(self) -> None:
+        client = ScriptedClient({})  # never writes anything
+        report = self.run_steps(client, (self.step("1", "a.txt", TEXT_A),))
+        self.assertFalse(report.passed)
+        self.assertEqual(report.steps[0].status, StepStatus.FAILED)
+        self.assertIsNotNone(report.steps[0].recovery)
+        self.assertIsNone(report.steps[0].error)
+
+    def test_permanent_failure_is_fail_fast(self) -> None:
+        client = ScriptedClient({})  # nothing ever verifies
+        report = self.run_steps(
+            client,
+            (
+                self.step("1", "a.txt", TEXT_A),
+                self.step("2", "b.txt", TEXT_B),
+                self.step("3", "c.txt", "content c"),
+            ),
+        )
+        self.assertFalse(report.passed)
+        self.assertEqual(report.steps[0].status, StepStatus.FAILED)
+        self.assertEqual(
+            [s.status for s in report.steps[1:]],
+            [StepStatus.SKIPPED, StepStatus.SKIPPED],
+        )
+        self.assertEqual(len(client.calls), 2)  # only step 1's bounded attempts
+        for skipped in report.steps[1:]:
+            self.assertIsNone(skipped.recovery)
+            self.assertIsNone(skipped.error)
+
+    def test_executor_exception_becomes_failed_with_error(self) -> None:
+        report = self.run_steps(
+            ExplodingClient(),
+            (self.step("1", "a.txt", TEXT_A),),
+        )
+        self.assertFalse(report.passed)
+        self.assertEqual(report.steps[0].status, StepStatus.FAILED)
+        self.assertIsNotNone(report.steps[0].error)
+        self.assertIn("executor exploded", report.steps[0].error)
+        self.assertIsNone(report.steps[0].recovery)
+
+
+class TestPlanRunnerDependencies(PlanRunnerTestBase):
+    def test_dependency_on_failed_step_is_skipped(self) -> None:
+        b = self.temp_dir / "b.txt"
+        client = ScriptedClient({})  # nothing ever verifies
+        report = self.run_steps(
+            client,
+            (
+                self.step("1", "a.txt", TEXT_A),
+                self.step("2", "b.txt", TEXT_B, depends_on=("1",)),
+            ),
+        )
+        self.assertFalse(report.passed)
+        self.assertEqual(report.steps[0].status, StepStatus.FAILED)
+        self.assertEqual(report.steps[1].status, StepStatus.SKIPPED)
+        self.assertIsNone(report.steps[1].recovery)
+        self.assertEqual(len(client.calls), 2)  # fail-fast: no step 2 execution
+        self.assertFalse(b.exists())
+
+    def test_dependency_on_skipped_step_is_skipped(self) -> None:
+        # A skipped step arises via fail-fast; model it directly: step 1
+        # fails, steps 2 and 3 would be skipped — then depend step 3 on 2
+        # through an explicit chained plan.
+        c = self.temp_dir / "c.txt"
+        client = ScriptedClient({})  # nothing ever verifies
+        report = self.run_steps(
+            client,
+            (
+                self.step("1", "a.txt", TEXT_A),
+                self.step("2", "b.txt", TEXT_B, depends_on=("1",)),
+                self.step("3", "c.txt", "content c", depends_on=("2",)),
+            ),
+        )
+        self.assertFalse(report.passed)
+        self.assertEqual(
+            [s.status for s in report.steps],
+            [StepStatus.FAILED, StepStatus.SKIPPED, StepStatus.SKIPPED],
+        )
+        self.assertIsNone(report.steps[2].recovery)
+        self.assertFalse(c.exists())
+
+    def test_independent_steps_after_successful_dependency_execute(self) -> None:
+        a = self.temp_dir / "a.txt"
+        b = self.temp_dir / "b.txt"
+        client = ScriptedClient(
+            {
+                "a.txt": (1, a, TEXT_A),
+                "b.txt": (1, b, TEXT_B),
+            }
+        )
+        report = self.run_steps(
+            client,
+            (
+                self.step("1", "a.txt", TEXT_A),
+                self.step("2", "b.txt", TEXT_B, depends_on=("1",)),
+            ),
+        )
+        self.assertTrue(report.passed)
+        self.assertEqual(
+            [s.status for s in report.steps],
+            [StepStatus.PASSED, StepStatus.PASSED],
+        )
+
+
+class TestPlanRunnerPolicy(PlanRunnerTestBase):
+    def test_step_max_attempts_overrides_default(self) -> None:
+        target = self.temp_dir / "a.txt"
+
+        # Default 2 attempts: a step needing 3 fails permanently.
+        client = ScriptedClient({"a.txt": (3, target, TEXT_A)})
+        report = self.run_steps(client, (self.step("1", "a.txt", TEXT_A),))
+        self.assertFalse(report.passed)
+        self.assertEqual(report.steps[0].status, StepStatus.FAILED)
+        self.assertEqual(client.counts["a.txt"], 2)
+
+        # Explicit step.max_attempts=3 recovers on the third attempt.
+        client2 = ScriptedClient({"a.txt": (3, target, TEXT_A)})
+        runner2 = self.runner(client2, default_max_attempts=2)
+        plan2 = Plan(
+            goal=Goal("fake goal"),
+            steps=(self.step("1", "a.txt", TEXT_A, max_attempts=3),),
+        )
+        report2 = runner2.run_plan(plan2)
+        self.assertTrue(report2.passed)
+        self.assertEqual(client2.counts["a.txt"], 3)
+        assert report2.steps[0].recovery is not None
+        self.assertEqual(report2.steps[0].recovery.attempts, 3)
+
+    def test_report_aggregates_recovery_history(self) -> None:
+        a = self.temp_dir / "a.txt"
+        b = self.temp_dir / "b.txt"
+        client = ScriptedClient(
+            {
+                "a.txt": (2, a, TEXT_A),  # recovers on attempt 2
+                "b.txt": (1, b, TEXT_B),  # passes immediately
+            }
+        )
+        report = self.run_steps(
+            client,
+            (
+                self.step("1", "a.txt", TEXT_A),
+                self.step("2", "b.txt", TEXT_B),
+            ),
+        )
+        self.assertTrue(report.passed)
+        first, second = report.steps
+        assert first.recovery is not None and second.recovery is not None
+        self.assertEqual(first.recovery.attempts, 2)
+        self.assertEqual(len(first.recovery.history), 2)
+        self.assertFalse(first.recovery.history[0].passed)
+        self.assertTrue(first.recovery.history[1].passed)
+        self.assertIs(first.recovery.verification, first.recovery.history[1])
+        self.assertEqual(second.recovery.attempts, 1)
+        self.assertEqual(len(second.recovery.history), 1)
+
+    def test_empty_plan_rejected_through_validate_plan(self) -> None:
+        runner = self.runner(ScriptedClient({}))
+        with self.assertRaisesRegex(ValueError, "at least one step"):
+            runner.run_plan(Plan(goal=Goal("fake goal"), steps=()))
+
+    def test_invalid_dependency_rejected_through_validate_plan(self) -> None:
+        runner = self.runner(ScriptedClient({}))
+        plan = Plan(
+            goal=Goal("fake goal"),
+            steps=(PlanStep(id="1", action="write a.txt", depends_on=("ghost",)),),
+        )
+        with self.assertRaisesRegex(ValueError, "unknown step"):
+            runner.run_plan(plan)
+
+    def test_run_uses_planner_goal_and_thread_id_passthrough(self) -> None:
+        captured: dict[str, Any] = {}
+
+        class RecordingPlanner(DeterministicPlanner):
+            def plan(self, goal: Goal) -> Plan:
+                captured["goal"] = goal
+                return Plan(
+                    goal=goal,
+                    steps=(PlanStep(id="step-1", action=goal.description),),
+                )
+
+        class RecordingClient:
+            def __init__(self, base: Path) -> None:
+                self.base = base
+
+            def send_message(
+                self,
+                message: str,
+                thread_id: str | None = None,
+                timeout: float | None = None,
+            ) -> str:
+                captured["thread_id"] = thread_id
+                (self.base / "done.txt").write_text(TEXT_A)
+                return "fake response"
+
+        client = RecordingClient(self.temp_dir)
+        runner = PlanRunner(
+            planner=RecordingPlanner(),
+            client=client,
+            verifier=self.verifier,
+            base_dir=str(self.temp_dir),
+            thread_id="thread-42",
+        )
+        goal = Goal("create done.txt")
+        plan = runner.planner.plan(goal)
+        plan = Plan(
+            goal=goal,
+            steps=(
+                PlanStep(
+                    id="step-1",
+                    action=goal.description,
+                    expectations=(
+                        FileExpectation("done.txt", exists=True, contains=TEXT_A),
+                    ),
+                ),
+            ),
+        )
+        report = runner.run_plan(plan)
+        self.assertTrue(report.passed)
+        self.assertEqual(captured["goal"], goal)
+        self.assertEqual(captured["thread_id"], "thread-42")
+
+
+if __name__ == "__main__":
+    unittest.main()
