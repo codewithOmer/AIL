@@ -47,6 +47,47 @@ class DeterministicMultiStepPlanner(Planner):
         )
 
 
+class GoalAwarePlanner(Planner):
+    """Select one of two predefined plans from an exact goal description."""
+
+    def plan(self, goal: Goal) -> Plan:
+        if goal.description == "Create a project workspace":
+            return Plan(
+                goal=goal,
+                steps=(
+                    PlanStep(
+                        id="create-workspace",
+                        action="Create the project workspace.",
+                        expectations=("project-workspace-created",),
+                    ),
+                    PlanStep(
+                        id="verify-workspace",
+                        action="Verify the project workspace.",
+                        expectations=("project-workspace-verified",),
+                        depends_on=("create-workspace",),
+                    ),
+                ),
+            )
+        if goal.description == "Create a project summary":
+            return Plan(
+                goal=goal,
+                steps=(
+                    PlanStep(
+                        id="collect-summary",
+                        action="Collect project summary details.",
+                        expectations=("summary-details-collected",),
+                    ),
+                    PlanStep(
+                        id="write-summary",
+                        action="Write the project summary.",
+                        expectations=("project-summary-written",),
+                        depends_on=("collect-summary",),
+                    ),
+                ),
+            )
+        return DeterministicPlanner().plan(goal)
+
+
 def validate_plan(plan: Plan) -> None:
     """Reject structurally invalid plans.
 

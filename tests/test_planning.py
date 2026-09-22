@@ -18,6 +18,7 @@ if AIL_ROOT not in sys.path:
 from core.planner import (  # noqa: E402
     DeterministicMultiStepPlanner,
     DeterministicPlanner,
+    GoalAwarePlanner,
     validate_plan,
 )
 from interfaces.planning import Goal, Plan, PlanStep  # noqa: E402
@@ -119,6 +120,75 @@ class TestDeterministicMultiStepPlanner(unittest.TestCase):
             ["prepare-workspace", "complete-task"],
         )
         validate_plan(first)
+
+
+class TestGoalAwarePlanner(unittest.TestCase):
+    def setUp(self) -> None:
+        self.planner = GoalAwarePlanner()
+
+    def test_workspace_goal_selects_predefined_plan(self) -> None:
+        goal = Goal("Create a project workspace")
+
+        plan = self.planner.plan(goal)
+
+        self.assertIs(plan.goal, goal)
+        self.assertEqual(
+            plan.steps,
+            (
+                PlanStep(
+                    id="create-workspace",
+                    action="Create the project workspace.",
+                    expectations=("project-workspace-created",),
+                ),
+                PlanStep(
+                    id="verify-workspace",
+                    action="Verify the project workspace.",
+                    expectations=("project-workspace-verified",),
+                    depends_on=("create-workspace",),
+                ),
+            ),
+        )
+        validate_plan(plan)
+
+    def test_summary_goal_selects_different_predefined_plan(self) -> None:
+        goal = Goal("Create a project summary")
+
+        plan = self.planner.plan(goal)
+
+        self.assertIs(plan.goal, goal)
+        self.assertEqual(
+            plan.steps,
+            (
+                PlanStep(
+                    id="collect-summary",
+                    action="Collect project summary details.",
+                    expectations=("summary-details-collected",),
+                ),
+                PlanStep(
+                    id="write-summary",
+                    action="Write the project summary.",
+                    expectations=("project-summary-written",),
+                    depends_on=("collect-summary",),
+                ),
+            ),
+        )
+        validate_plan(plan)
+
+    def test_recognized_plans_are_deterministic(self) -> None:
+        workspace = Goal("Create a project workspace")
+        summary = Goal("Create a project summary")
+
+        self.assertEqual(self.planner.plan(workspace), self.planner.plan(workspace))
+        self.assertNotEqual(self.planner.plan(workspace), self.planner.plan(summary))
+
+    def test_unsupported_goal_falls_back_to_single_step_plan(self) -> None:
+        goal = Goal("Do something else")
+
+        plan = self.planner.plan(goal)
+
+        self.assertIs(plan.goal, goal)
+        self.assertEqual(plan.steps, (PlanStep(id="step-1", action=goal.description),))
+        validate_plan(plan)
 
 
 if __name__ == "__main__":
