@@ -25,6 +25,28 @@ class DeterministicPlanner(Planner):
         )
 
 
+class DeterministicMultiStepPlanner(Planner):
+    """Fixed two-step planner for proving structured plan execution."""
+
+    def plan(self, goal: Goal) -> Plan:
+        return Plan(
+            goal=goal,
+            steps=(
+                PlanStep(
+                    id="prepare-workspace",
+                    action="Prepare the workspace for the requested task.",
+                    expectations=("workspace-prepared",),
+                ),
+                PlanStep(
+                    id="complete-task",
+                    action=goal.description,
+                    expectations=("task-completed",),
+                    depends_on=("prepare-workspace",),
+                ),
+            ),
+        )
+
+
 def validate_plan(plan: Plan) -> None:
     """Reject structurally invalid plans.
 

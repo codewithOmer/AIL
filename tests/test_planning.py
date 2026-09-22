@@ -15,7 +15,11 @@ AIL_ROOT = str(Path(__file__).resolve().parents[1])
 if AIL_ROOT not in sys.path:
     sys.path.insert(0, AIL_ROOT)
 
-from core.planner import DeterministicPlanner, validate_plan  # noqa: E402
+from core.planner import (  # noqa: E402
+    DeterministicMultiStepPlanner,
+    DeterministicPlanner,
+    validate_plan,
+)
 from interfaces.planning import Goal, Plan, PlanStep  # noqa: E402
 
 
@@ -76,6 +80,45 @@ class TestPlanning(unittest.TestCase):
     def test_planner_requires_no_context(self) -> None:
         # Should not raise
         self.planner.plan(Goal("x"))
+
+
+class TestDeterministicMultiStepPlanner(unittest.TestCase):
+    def test_creates_stable_dependency_safe_plan(self) -> None:
+        planner = DeterministicMultiStepPlanner()
+        goal = Goal("Complete the task")
+
+        plan = planner.plan(goal)
+
+        self.assertEqual(
+            plan.steps,
+            (
+                PlanStep(
+                    id="prepare-workspace",
+                    action="Prepare the workspace for the requested task.",
+                    expectations=("workspace-prepared",),
+                ),
+                PlanStep(
+                    id="complete-task",
+                    action="Complete the task",
+                    expectations=("task-completed",),
+                    depends_on=("prepare-workspace",),
+                ),
+            ),
+        )
+
+    def test_is_deterministic_and_validates(self) -> None:
+        planner = DeterministicMultiStepPlanner()
+        goal = Goal("Complete the task")
+
+        first = planner.plan(goal)
+        second = planner.plan(goal)
+
+        self.assertEqual(first, second)
+        self.assertEqual(
+            [step.id for step in first.steps],
+            ["prepare-workspace", "complete-task"],
+        )
+        validate_plan(first)
 
 
 if __name__ == "__main__":
