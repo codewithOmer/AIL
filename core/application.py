@@ -7,11 +7,13 @@ from pathlib import Path
 from typing import Any
 
 from core.agent import Agent
+from core.intent_router import DefaultIntentRouter
 from core.plan_runner import PlanRunner
 from core.planner import DeterministicFileReplanner, SupportedFileTaskPlanner
 from integrations.open_interpreter.client import OpenInterpreterClient
 from integrations.open_interpreter.config import OIConfig
 from integrations.personalai.memory import PersonalAIMemoryStore
+from interfaces.intent import IntentKind, IntentRouter
 from interfaces.planning import ExecutionReport, Planner, Replanner
 from memory.flow import extract_explicit_facts, store_if_new
 from memory.interface import Memory, MemoryStore
@@ -25,6 +27,7 @@ class AILApplication:
     memory_store: MemoryStore
     client: Any
     agent: Agent
+    intent_router: IntentRouter
     thread_id: str | None = None
     owns_client: bool = True
 
@@ -41,6 +44,7 @@ class AILApplication:
         oi_config: OIConfig | None = None,
         start_client: bool = True,
         timeout: float | None = None,
+        intent_router: IntentRouter | None = None,
     ) -> "AILApplication":
         config = oi_config or replace(OIConfig(), sandbox="workspace-write")
         workspace = Path(base_dir or config.cwd).resolve()
@@ -66,16 +70,23 @@ class AILApplication:
             memory_store=store,
             client=runtime_client,
             agent=Agent(store, runner),
+            intent_router=intent_router or DefaultIntentRouter(),
             thread_id=thread_id,
             owns_client=client is None,
         )
 
     def run(self, message: str, *, top_k: int = 3) -> ExecutionReport:
-        """Run one task and persist only explicit durable user facts afterward."""
-        try:
-            return self.agent.run(message, top_k=top_k)
-        finally:
-            self.remember(message)
+        """Run a task through the existing Agent pipeline."""
+        return self.agent.run(message, top_k=top_k)
+
+    def handle(
+        self, message: str, *, top_k: int = 3
+    ) -> ExecutionReport | tuple[Memory, ...]:
+        """Route one message to either memory writing or task execution."""
+        intent = self.intent_router.route(message)
+        if intent.kind is IntentKind.MEMORY:
+            return self.remember(message)
+        return self.agent.run(message, top_k=top_k)
 
     def remember(self, message: str) -> tuple[Memory, ...]:
         stored: list[Memory] = []

@@ -18,8 +18,26 @@ from memory.interface import Memory, MemoryStore
 
 _MEMORY_HEADER = "[Memory context from previous conversations:]"
 
-_NAME_RE = re.compile(r"\bmy name is\s+(.+)$", re.IGNORECASE)
-_REMEMBER_RE = re.compile(r"\bremember(?: that)?\s+(.+)$", re.IGNORECASE)
+_NAME_RE = re.compile(
+    r"(?i:my name is)\s+(?P<fact>[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)[.!?]?\Z"
+)
+_REMEMBER_RE = re.compile(
+    r"(?i:remember(?:\s+that)?\s+)(?P<fact>.+?)[.!?]?\Z"
+)
+
+
+def _normalize_standalone_fact(fact: str) -> str | None:
+    """Normalize one trailing mark and reject clear clause boundaries."""
+    normalized = fact.strip()
+    if normalized.lower() == "that":
+        return None
+    if normalized and normalized[-1] in ".!?":
+        normalized = normalized[:-1].rstrip()
+    if not normalized or normalized[-1:] in ".!?":
+        return None
+    if re.search(r"[.!?]\s+\S|;|:\s|\s-\s", normalized):
+        return None
+    return normalized
 
 
 def build_context_block(recalled: list[Memory]) -> str:
@@ -49,15 +67,18 @@ def extract_explicit_facts(message: str) -> list[str]:
     """
     facts: list[str] = []
 
-    name_match = _NAME_RE.search(message)
+    normalized_message = message.strip()
+    name_match = _NAME_RE.fullmatch(normalized_message)
     if name_match:
-        name = name_match.group(1).strip().rstrip(".!")
-        facts.append(f"The user's name is {name}.")
+        name = _normalize_standalone_fact(name_match.group("fact"))
+        if name is not None:
+            facts.append(f"The user's name is {name}.")
 
-    remember_match = _REMEMBER_RE.search(message)
+    remember_match = _REMEMBER_RE.fullmatch(normalized_message)
     if remember_match:
-        fact = remember_match.group(1).strip().rstrip(".!")
-        facts.append(f"{fact}.")
+        fact = _normalize_standalone_fact(remember_match.group("fact"))
+        if fact is not None:
+            facts.append(f"{fact}.")
 
     return facts
 

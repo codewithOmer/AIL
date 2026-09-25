@@ -37,12 +37,17 @@ def run_oi_mode() -> None:
             if not message or message.lower() in ("exit", "quit"):
                 break
 
+
             try:
-                report = application.run(message)
+                result = application.handle(message)
             except UnsupportedTaskError as exc:
                 print(f"AIL: unsupported task ({exc})")
                 continue
-            _print_report(report)
+
+            if isinstance(result, tuple):
+                continue
+
+            _print_report(result)
     except OIConnectionError as exc:
         print(f"Failed to connect to OI App Server: {exc}", file=sys.stderr)
         sys.exit(1)

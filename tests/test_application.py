@@ -137,7 +137,7 @@ class TestApplication(unittest.TestCase):
         expectation = report.attempts[0].plan.steps[0].expectations[0]
         self.assertEqual(expectation.path, "hello.txt")
         self.assertEqual(expectation.contains, "remember that I like coffee")
-        self.assertEqual(events, ["recall", "execute", "list_all", "store"])
+        self.assertEqual(events, ["recall", "execute"])
         self.assertEqual(len(client.calls), 1)
 
     def test_existing_short_file_task_syntax_is_supported(self) -> None:

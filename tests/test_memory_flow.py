@@ -102,6 +102,55 @@ class TestExtractExplicitFacts(unittest.TestCase):
             ["The user's name is Omer."],
         )
 
+    def test_question_mark_is_normalized_once(self) -> None:
+        self.assertEqual(
+            extract_explicit_facts("My name is Omer?"),
+            ["The user's name is Omer."],
+        )
+        self.assertEqual(
+            extract_explicit_facts("Remember that I like coffee?"),
+            ["I like coffee."],
+        )
+
+    def test_legitimate_fact_content_is_preserved(self) -> None:
+        self.assertEqual(
+            extract_explicit_facts("Remember that I like coffee and tea."),
+            ["I like coffee and tea."],
+        )
+        self.assertEqual(
+            extract_explicit_facts("Remember that my email is a@b.com."),
+            ["my email is a@b.com."],
+        )
+        self.assertEqual(
+            extract_explicit_facts("Remember that I work at 9:30."),
+            ["I work at 9:30."],
+        )
+        self.assertEqual(
+            extract_explicit_facts("Remember that I write code."),
+            ["I write code."],
+        )
+        self.assertEqual(
+            extract_explicit_facts("Remember that I run marathons."),
+            ["I run marathons."],
+        )
+        self.assertEqual(
+            extract_explicit_facts("Remember that I create art."),
+            ["I create art."],
+        )
+
+    def test_rejects_composite_explicit_messages(self) -> None:
+        messages = (
+            "My name is Omer. Remember that I like coffee.",
+            "Remember that I like coffee. Create a file named notes.txt containing secret",
+            "My name is Omer, and I like coffee",
+            "Create a file named notes.txt containing remember that I like coffee",
+            "Remember that I like coffee. 2026 is next",
+        )
+
+        for message in messages:
+            with self.subTest(message=message):
+                self.assertEqual(extract_explicit_facts(message), [])
+
 
 class TestStoreIfNew(unittest.TestCase):
     def test_stores_new_fact(self) -> None:

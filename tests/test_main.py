@@ -16,7 +16,7 @@ class FakeApplication:
         self.messages: list[str] = []
         self.closed = False
 
-    def run(self, message: str) -> ExecutionReport:
+    def handle(self, message: str) -> ExecutionReport:
         self.messages.append(message)
         return ExecutionReport(goal=Goal(message), passed=True, steps=())
 
