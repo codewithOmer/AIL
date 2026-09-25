@@ -7,7 +7,133 @@ AIL-owned integrity check over the static plan form.
 
 from __future__ import annotations
 
-from interfaces.planning import Goal, Plan, PlanStep, Planner
+import re
+from pathlib import PurePosixPath, PureWindowsPath
+
+from interfaces.planning import (
+    ExecutionReport,
+    Goal,
+    Plan,
+    PlanStep,
+    Planner,
+    Replanner,
+    StepStatus,
+)
+from tools.fs_verifier import FileExpectation
+
+
+class UnsupportedTaskError(ValueError):
+    """Raised when the production deterministic planner cannot handle a goal."""
+
+
+_CREATE_FILE_RE = re.compile(
+    r"create\s+(?:(?:a\s+)?file(?:\s+named)?\s+)?"
+    r"(?P<filename>[^\s]+)\s+containing\s+(?P<content>.+?)\s*\.?$",
+    re.IGNORECASE,
+)
+
+
+def _is_safe_filename(filename: str) -> bool:
+    """Accept only one relative filename within the configured workspace."""
+    if not filename or filename in {".", ".."}:
+        return False
+    if "/" in filename or "\\" in filename:
+        return False
+
+    posix_path = PurePosixPath(filename)
+    windows_path = PureWindowsPath(filename)
+    return not (
+        posix_path.is_absolute()
+        or windows_path.is_absolute()
+        or windows_path.drive
+        or windows_path.root
+    )
+
+
+class SupportedFileTaskPlanner(Planner):
+    """Plan the narrow, explicitly supported file-creation task shape."""
+
+    def plan(self, goal: Goal) -> Plan:
+        matches = list(_CREATE_FILE_RE.finditer(goal.description))
+        match = matches[-1] if matches else None
+        if match is None:
+            raise UnsupportedTaskError(
+                "Unsupported task. Supported syntax: "
+                "Create a file named <filename> containing <content>"
+            )
+
+        filename = match.group("filename")
+        if not _is_safe_filename(filename):
+            raise UnsupportedTaskError(
+                "Unsupported task. The filename must be a single relative "
+                "filename within the configured workspace."
+            )
+        content = match.group("content").strip()
+        return Plan(
+            goal=goal,
+            steps=(
+                PlanStep(
+                    id="create-file",
+                    action=goal.description,
+                    expectations=(
+                        FileExpectation(
+                            path=filename,
+                            exists=True,
+                            contains=content,
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+
+class DeterministicFileReplanner(Replanner):
+    """Create one corrective replacement plan for a failed file task."""
+
+    def replan(self, plan: Plan, report: ExecutionReport) -> Plan | None:
+        if report.passed or len(report.attempts) != 1:
+            return None
+        if len(plan.steps) != 1 or len(report.steps) != 1:
+            return None
+
+        step = plan.steps[0]
+        result = report.steps[0]
+        if result.status is not StepStatus.FAILED or result.recovery is None:
+            return None
+        if len(step.expectations) != 1:
+            return None
+
+        expectation = step.expectations[0]
+        if not isinstance(expectation, FileExpectation):
+            return None
+
+        try:
+            canonical = SupportedFileTaskPlanner().plan(plan.goal)
+        except UnsupportedTaskError:
+            return None
+        canonical_expectation = canonical.steps[0].expectations[0]
+        if canonical_expectation != expectation:
+            return None
+
+        replacement_step = PlanStep(
+            id=step.id,
+            action=(
+                f"{step.action}\n\n"
+                "The previous attempt did not satisfy the file requirement. "
+                f"Ensure {expectation.path} exists and contains "
+                f"{expectation.contains!r}."
+            ),
+            expectations=(
+                FileExpectation(
+                    path=expectation.path,
+                    exists=expectation.exists,
+                    contains=expectation.contains,
+                ),
+            ),
+            depends_on=step.depends_on,
+            max_attempts=step.max_attempts,
+        )
+        return Plan(goal=plan.goal, steps=(replacement_step,))
 
 
 class DeterministicPlanner(Planner):
