@@ -39,10 +39,17 @@ class OITimeoutError(OIError):
 
 
 class OIResponse:
-    def __init__(self, text: str, thread_id: str, turn_id: str) -> None:
+    def __init__(
+        self,
+        text: str,
+        thread_id: str,
+        turn_id: str,
+        items: list[dict[str, Any]] | None = None,
+    ) -> None:
         self.text = text
         self.thread_id = thread_id
         self.turn_id = turn_id
+        self.items = items if items is not None else []
 
     def __str__(self) -> str:
         return self.text
@@ -188,6 +195,7 @@ class OpenInterpreterClient:
                             text=final_text or "".join(text_parts.values()),
                             thread_id=thread_id,
                             turn_id=turn_id,
+                            items=items,
                         )
                 elif n.method == "error":
                     params = n.params
@@ -206,6 +214,11 @@ class OpenInterpreterClient:
         raise OITimeoutError(
             f"Timeout after {timeout}s waiting for turn completion"
         )
+
+    def get_stderr(self) -> list[str]:
+        if self._transport is None:
+            return []
+        return self._transport.get_stderr_lines()
 
     def shutdown(self) -> None:
         if self._transport is not None:

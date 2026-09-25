@@ -74,7 +74,10 @@ class SupportedFileTaskPlanner(Planner):
             steps=(
                 PlanStep(
                     id="create-file",
-                    action=goal.description,
+                    action=(
+                        f"Create {filename} in the current workspace containing "
+                        f"exactly the text {content}."
+                    ),
                     expectations=(
                         FileExpectation(
                             path=filename,

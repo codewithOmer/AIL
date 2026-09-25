@@ -19,6 +19,7 @@ from core.planner import (  # noqa: E402
     DeterministicMultiStepPlanner,
     DeterministicPlanner,
     GoalAwarePlanner,
+    SupportedFileTaskPlanner,
     validate_plan,
 )
 from interfaces.planning import Goal, Plan, PlanStep  # noqa: E402
@@ -156,6 +157,17 @@ class TestPlanning(unittest.TestCase):
     def test_planner_requires_no_context(self) -> None:
         # Should not raise
         self.planner.plan(Goal("x"))
+
+    def test_supported_file_task_has_explicit_executor_action(self) -> None:
+        plan = SupportedFileTaskPlanner().plan(
+            Goal("Create a file named notes.txt containing project notes")
+        )
+
+        self.assertEqual(
+            plan.steps[0].action,
+            "Create notes.txt in the current workspace containing exactly "
+            "the text project notes.",
+        )
 
 
 class TestDeterministicMultiStepPlanner(unittest.TestCase):
