@@ -217,9 +217,8 @@ class GoalAwarePlanner(Planner):
 def validate_plan(plan: Plan) -> None:
     """Reject structurally invalid plans.
 
-    Dependencies are metadata only in 2F — execution order remains tuple
-    order, so this never schedules anything.  Raises ``ValueError`` on the
-    first problem found.
+    Execution order remains tuple order, so dependencies must point backward
+    to an earlier step. Raises ``ValueError`` on the first problem found.
     """
     if not plan.steps:
         raise ValueError("plan must contain at least one step")
@@ -247,4 +246,30 @@ def validate_plan(plan: Plan) -> None:
             if dep not in step_ids:
                 raise ValueError(
                     f"step {step.id!r} depends on unknown step {dep!r}"
+                )
+
+    graph = {step.id: step.depends_on for step in plan.steps}
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(step_id: str) -> None:
+        if step_id in visiting:
+            raise ValueError(f"dependency cycle includes step {step_id!r}")
+        if step_id in visited:
+            return
+        visiting.add(step_id)
+        for dependency in graph[step_id]:
+            visit(dependency)
+        visiting.remove(step_id)
+        visited.add(step_id)
+
+    for step in plan.steps:
+        visit(step.id)
+
+    positions = {step.id: index for index, step in enumerate(plan.steps)}
+    for step in plan.steps:
+        for dependency in step.depends_on:
+            if positions[dependency] >= positions[step.id]:
+                raise ValueError(
+                    f"step {step.id!r} depends on later step {dependency!r}"
                 )

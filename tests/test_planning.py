@@ -63,6 +63,81 @@ class TestPlanning(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unknown"):
             validate_plan(plan)
 
+    def test_self_dependency_rejected(self) -> None:
+        plan = Plan(
+            goal=Goal("x"),
+            steps=(PlanStep(id="a", action="A", depends_on=("a",)),),
+        )
+        with self.assertRaisesRegex(ValueError, "cannot depend on itself"):
+            validate_plan(plan)
+
+    def test_duplicate_dependency_rejected(self) -> None:
+        plan = Plan(
+            goal=Goal("x"),
+            steps=(
+                PlanStep(id="a", action="A"),
+                PlanStep(id="b", action="B", depends_on=("a", "a")),
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "more than once"):
+            validate_plan(plan)
+
+    def test_valid_dependency_chain_is_accepted(self) -> None:
+        plan = Plan(
+            goal=Goal("x"),
+            steps=(
+                PlanStep(id="a", action="A"),
+                PlanStep(id="b", action="B", depends_on=("a",)),
+                PlanStep(id="c", action="C", depends_on=("b",)),
+            ),
+        )
+        validate_plan(plan)
+
+    def test_valid_independent_steps_are_accepted(self) -> None:
+        plan = Plan(
+            goal=Goal("x"),
+            steps=(
+                PlanStep(id="a", action="A"),
+                PlanStep(id="b", action="B"),
+                PlanStep(id="c", action="C"),
+            ),
+        )
+        validate_plan(plan)
+
+    def test_forward_dependency_is_rejected(self) -> None:
+        plan = Plan(
+            goal=Goal("x"),
+            steps=(
+                PlanStep(id="a", action="A", depends_on=("b",)),
+                PlanStep(id="b", action="B"),
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "later"):
+            validate_plan(plan)
+
+    def test_two_step_dependency_cycle_is_rejected(self) -> None:
+        plan = Plan(
+            goal=Goal("x"),
+            steps=(
+                PlanStep(id="a", action="A", depends_on=("b",)),
+                PlanStep(id="b", action="B", depends_on=("a",)),
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "cycle"):
+            validate_plan(plan)
+
+    def test_longer_dependency_cycle_is_rejected(self) -> None:
+        plan = Plan(
+            goal=Goal("x"),
+            steps=(
+                PlanStep(id="a", action="A", depends_on=("b",)),
+                PlanStep(id="b", action="B", depends_on=("c",)),
+                PlanStep(id="c", action="C", depends_on=("a",)),
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "cycle"):
+            validate_plan(plan)
+
     def test_invalid_max_attempts_rejected(self) -> None:
         with self.assertRaises(ValueError):
             PlanStep(id="1", action="a", max_attempts=0)
