@@ -19,6 +19,7 @@ AIL_ROOT = str(Path(__file__).resolve().parents[1])
 if AIL_ROOT not in sys.path:
     sys.path.insert(0, AIL_ROOT)
 
+from core.actions import execute_and_verify  # noqa: E402
 from core.recovery import DefaultRetry, execute_with_recovery  # noqa: E402
 from interfaces.recovery import RecoveryResult, RecoveryStrategy  # noqa: E402
 from interfaces.verification import CheckResult, VerificationResult  # noqa: E402
@@ -35,11 +36,13 @@ class FakeExecutor:
         self.target = Path(target)
         self.calls = 0
         self.succeed_on = succeed_on
+        self.timeouts: list[float | None] = []
 
     def send_message(
         self, message: str, thread_id: str | None = None, timeout: float | None = None
     ) -> str:
         self.calls += 1
+        self.timeouts.append(timeout)
         if self.calls >= self.succeed_on:
             self.target.write_text(EXPECTED_TEXT)
         return "fake executor response text"
@@ -83,6 +86,36 @@ class RecoveryTestBase(unittest.TestCase):
 
 
 class TestExecuteWithRecovery(RecoveryTestBase):
+    def test_execute_and_verify_forwards_timeout(self) -> None:
+        executor = FakeExecutor(self.temp_dir / TARGET)
+
+        _, result = execute_and_verify(
+            executor,
+            self.make_verifier(),
+            "create the file",
+            self.expectations(),
+            base_dir=self.temp_dir,
+            timeout=7.5,
+        )
+
+        self.assertTrue(result.passed)
+        self.assertEqual(executor.timeouts, [7.5])
+
+    def test_recovery_forwards_timeout_on_every_attempt(self) -> None:
+        executor = FakeExecutor(self.temp_dir / TARGET, succeed_on=2)
+
+        result = execute_with_recovery(
+            executor,
+            self.make_verifier(),
+            "create the file",
+            self.expectations(),
+            base_dir=self.temp_dir,
+            timeout=7.5,
+        )
+
+        self.assertTrue(result.passed)
+        self.assertEqual(executor.timeouts, [7.5, 7.5])
+
     def test_pass_on_first_attempt_is_single_attempt(self) -> None:
         executor = FakeExecutor(self.temp_dir / TARGET, succeed_on=1)
         result = execute_with_recovery(

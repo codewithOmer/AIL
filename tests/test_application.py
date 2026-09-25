@@ -82,6 +82,7 @@ class WritingClient:
         self.write = write
         self.succeed_on = succeed_on
         self.calls: list[str] = []
+        self.timeouts: list[float | None] = []
 
     def send_message(
         self,
@@ -91,6 +92,7 @@ class WritingClient:
     ) -> str:
         self.events.append("execute")
         self.calls.append(message)
+        self.timeouts.append(timeout)
         if self.write and len(self.calls) >= self.succeed_on:
             (self.base_dir / "hello.txt").write_text(
                 "remember that I like coffee",
@@ -107,7 +109,9 @@ class TestApplication(unittest.TestCase):
         shutil.rmtree(self.temp_dir)
 
     def make_application(
-        self, write: bool = True
+        self,
+        write: bool = True,
+        timeout: float | None = None,
     ) -> tuple[AILApplication, list[str], WritingClient]:
         events: list[str] = []
         memory = RecordingMemoryStore(events)
@@ -117,6 +121,7 @@ class TestApplication(unittest.TestCase):
             memory_store=memory,
             client=client,
             start_client=False,
+            timeout=timeout,
         )
         return application, events, client
 
@@ -230,6 +235,26 @@ class TestApplication(unittest.TestCase):
         config = client_factory.call_args.args[0]
         self.assertEqual(config.sandbox, "workspace-write")
         self.assertEqual(config.cwd, str(self.temp_dir.resolve()))
+
+    def test_application_timeout_reaches_executor(self) -> None:
+        application, _, client = self.make_application(timeout=6.25)
+
+        report = application.run(
+            "Create a file named hello.txt containing remember that I like coffee"
+        )
+
+        self.assertTrue(report.passed)
+        self.assertEqual(client.timeouts, [6.25])
+
+    def test_application_default_timeout_preserves_none(self) -> None:
+        application, _, client = self.make_application()
+
+        report = application.run(
+            "Create a file named hello.txt containing remember that I like coffee"
+        )
+
+        self.assertTrue(report.passed)
+        self.assertEqual(client.timeouts, [None])
 
     def test_explicit_oi_sandbox_is_preserved(self) -> None:
         explicit = OIConfig(sandbox="read-only")

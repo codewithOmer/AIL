@@ -40,6 +40,7 @@ class AILApplication:
         replanner: Replanner | None = None,
         oi_config: OIConfig | None = None,
         start_client: bool = True,
+        timeout: float | None = None,
     ) -> "AILApplication":
         config = oi_config or replace(OIConfig(), sandbox="workspace-write")
         workspace = Path(base_dir or config.cwd).resolve()
@@ -59,6 +60,7 @@ class AILApplication:
             base_dir=str(workspace),
             thread_id=thread_id,
             replanner=replanner or DeterministicFileReplanner(),
+            timeout=timeout,
         )
         return cls(
             memory_store=store,

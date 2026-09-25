@@ -49,6 +49,7 @@ class PlanRunner:
         default_max_attempts: int = 2,
         thread_id: str | None = None,
         replanner: Replanner | None = None,
+        timeout: float | None = None,
     ) -> None:
         self.planner = planner
         self.client = client
@@ -58,6 +59,7 @@ class PlanRunner:
         self.default_max_attempts = default_max_attempts
         self.thread_id = thread_id
         self.replanner = replanner
+        self.timeout = timeout
 
     def run(self, goal: Goal) -> ExecutionReport:
         """Plan *goal*, execute its steps, and return the final report."""
@@ -137,6 +139,7 @@ class PlanRunner:
                         if step.max_attempts is not None
                         else self.default_max_attempts
                     ),
+                    timeout=self.timeout,
                 )
                 status = StepStatus.PASSED if recovery.passed else StepStatus.FAILED
                 results.append(

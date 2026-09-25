@@ -55,6 +55,7 @@ def execute_with_recovery(
     base_dir: str = ".",
     strategy: RecoveryStrategy | None = None,
     max_attempts: int = 2,
+    timeout: float | None = None,
 ) -> RecoveryResult:
     """Execute and verify up to *max_attempts* times, recovering on failure.
 
@@ -80,6 +81,7 @@ def execute_with_recovery(
             expectations,
             thread_id=thread_id,
             base_dir=base_dir,
+            timeout=timeout,
         )
         history.append(result)
 

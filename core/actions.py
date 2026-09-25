@@ -22,6 +22,7 @@ def execute_and_verify(
     expectations: Any,
     thread_id: str | None = None,
     base_dir: str = ".",
+    timeout: float | None = None,
 ) -> tuple[OIResponse, VerificationResult]:
     """Execute *message* via *client*, then independently verify the outcome.
 
@@ -30,6 +31,13 @@ def execute_and_verify(
     3. Verifies the real filesystem against *expectations* with *verifier*.
     4. Returns both the OI response and the ``VerificationResult``.
     """
-    response = client.send_message(message, thread_id=thread_id)
+    if timeout is None:
+        response = client.send_message(message, thread_id=thread_id)
+    else:
+        response = client.send_message(
+            message,
+            thread_id=thread_id,
+            timeout=timeout,
+        )
     result = verifier.verify(expectations, base_dir)
     return response, result

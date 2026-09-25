@@ -50,11 +50,13 @@ class ScriptedClient:
         self.script = script
         self.calls: list[str] = []
         self.counts: dict[str, int] = {}
+        self.timeouts: list[float | None] = []
 
     def send_message(
         self, message: str, thread_id: str | None = None, timeout: float | None = None
     ) -> str:
         self.calls.append(message)
+        self.timeouts.append(timeout)
         for key, (succeed_on, target, text) in self.script.items():
             if key in message:
                 self.counts[key] = self.counts.get(key, 0) + 1
@@ -97,6 +99,7 @@ class PlanRunnerTestBase(unittest.TestCase):
         strategy: RecoveryStrategy | None = None,
         default_max_attempts: int = 2,
         replanner: Replanner | None = None,
+        timeout: float | None = None,
     ) -> PlanRunner:
         return PlanRunner(
             planner=DeterministicPlanner(),
@@ -106,6 +109,7 @@ class PlanRunnerTestBase(unittest.TestCase):
             base_dir=str(self.temp_dir),
             default_max_attempts=default_max_attempts,
             replanner=replanner,
+            timeout=timeout,
         )
 
     def run_steps(self, client: Any, steps: tuple[PlanStep, ...]) -> ExecutionReport:
@@ -283,6 +287,24 @@ class TestPlanRunnerDependencies(PlanRunnerTestBase):
 
 
 class TestPlanRunnerPolicy(PlanRunnerTestBase):
+    def test_timeout_is_forwarded_on_each_recovery_attempt(self) -> None:
+        target = self.temp_dir / "a.txt"
+        client = ScriptedClient({"a.txt": (2, target, TEXT_A)})
+
+        runner = self.runner(
+            client,
+            timeout=4.25,
+        )
+        report = runner.run_plan(
+            Plan(
+                goal=Goal("fake goal"),
+                steps=(self.step("1", "a.txt", TEXT_A),),
+            )
+        )
+
+        self.assertTrue(report.passed)
+        self.assertEqual(client.timeouts, [4.25, 4.25])
+
     def test_step_max_attempts_overrides_default(self) -> None:
         target = self.temp_dir / "a.txt"
 
