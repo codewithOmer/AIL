@@ -162,6 +162,36 @@ class TestClientUnit(unittest.TestCase):
             },
         )
 
+    def test_create_thread_renders_playwright_mcp_server(self):
+        server = MCPServerConfig(
+            name="browser",
+            command="npx",
+            args=[
+                "-y",
+                "@playwright/mcp@latest",
+                "--headless",
+                "--isolated",
+                "--no-webmcp",
+            ],
+            env={},
+        )
+        params = self._thread_request_params(OIConfig(mcp_servers=[server]))
+
+        self.assertEqual(
+            params["config"],
+            {
+                "mcp_servers.browser.command": "npx",
+                "mcp_servers.browser.args": [
+                    "-y",
+                    "@playwright/mcp@latest",
+                    "--headless",
+                    "--isolated",
+                    "--no-webmcp",
+                ],
+                "mcp_servers.browser.env": {},
+            },
+        )
+
     def test_create_thread_renders_multiple_enabled_mcp_servers(self):
         servers = [
             MCPServerConfig(name="one", command="one-server"),
