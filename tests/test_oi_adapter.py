@@ -9,6 +9,8 @@ import unittest
 from io import BytesIO
 from unittest.mock import MagicMock, patch
 
+from integrations.open_interpreter.client import OpenInterpreterClient, _safe_params
+from integrations.open_interpreter.config import MCPServerConfig, OIConfig
 from integrations.open_interpreter.protocol import (
     OIError,
     OINotification,
@@ -120,12 +122,109 @@ class TestTransportUnit(unittest.TestCase):
 
 class TestClientUnit(unittest.TestCase):
     def test_config_defaults(self):
-        from integrations.open_interpreter.config import OIConfig
-
         config = OIConfig()
         self.assertEqual(config.approval_policy, "never")
         self.assertEqual(config.sandbox, "read-only")
         self.assertIsInstance(config.extra_args, list)
+        self.assertEqual(config.mcp_servers, [])
+
+    def _thread_request_params(self, config: OIConfig) -> dict:
+        transport = MagicMock()
+        transport.request.return_value = {"thread": {"id": "thread-1"}}
+        client = OpenInterpreterClient(config)
+        client._transport = transport
+        client.create_thread()
+        transport.request.assert_called_once()
+        method, params = transport.request.call_args.args[:2]
+        self.assertEqual(method, "thread/start")
+        return params
+
+    def test_create_thread_omits_empty_mcp_config(self):
+        params = self._thread_request_params(OIConfig())
+
+        self.assertNotIn("config", params)
+
+    def test_create_thread_renders_enabled_mcp_server(self):
+        server = MCPServerConfig(
+            name="filesystem",
+            command="npx",
+            args=["-y", "server-filesystem", "C:/workspace"],
+            env={"MCP_MODE": "test"},
+        )
+        params = self._thread_request_params(OIConfig(mcp_servers=[server]))
+
+        self.assertEqual(
+            params["config"],
+            {
+                "mcp_servers.filesystem.command": "npx",
+                "mcp_servers.filesystem.args": ["-y", "server-filesystem", "C:/workspace"],
+                "mcp_servers.filesystem.env": {"MCP_MODE": "test"},
+            },
+        )
+
+    def test_create_thread_renders_multiple_enabled_mcp_servers(self):
+        servers = [
+            MCPServerConfig(name="one", command="one-server"),
+            MCPServerConfig(name="two", command="two-server", args=["--port", "1"]),
+        ]
+        params = self._thread_request_params(OIConfig(mcp_servers=servers))
+
+        self.assertEqual(
+            params["config"],
+            {
+                "mcp_servers.one.command": "one-server",
+                "mcp_servers.one.args": [],
+                "mcp_servers.one.env": {},
+                "mcp_servers.two.command": "two-server",
+                "mcp_servers.two.args": ["--port", "1"],
+                "mcp_servers.two.env": {},
+            },
+        )
+
+    def test_create_thread_skips_disabled_mcp_server(self):
+        server = MCPServerConfig(
+            name="disabled", command="unused", enabled=False
+        )
+        params = self._thread_request_params(OIConfig(mcp_servers=[server]))
+
+        self.assertNotIn("config", params)
+
+    def test_mcp_status_uses_generic_transport(self):
+        transport = MagicMock()
+        transport.request.return_value = {"servers": []}
+        client = OpenInterpreterClient(OIConfig())
+        client._transport = transport
+
+        result = client.mcp_status()
+
+        self.assertEqual(result, {"servers": []})
+        transport.request.assert_called_once_with(
+            "mcpServerStatus/list", {}, timeout=client._config.request_timeout
+        )
+
+    def test_safe_params_redacts_nested_secrets(self):
+        safe = _safe_params(
+            {
+                "config": {
+                    "mcp_servers.linear.env": {
+                        "LINEAR_API_KEY": "secret-value",
+                        "LINEAR_TEAM": "engineering",
+                    }
+                }
+            }
+        )
+
+        self.assertEqual(
+            safe,
+            {
+                "config": {
+                    "mcp_servers.linear.env": {
+                        "LINEAR_API_KEY": "***",
+                        "LINEAR_TEAM": "engineering",
+                    }
+                }
+            },
+        )
 
 
 if __name__ == "__main__":

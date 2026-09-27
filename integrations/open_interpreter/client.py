@@ -120,6 +120,18 @@ class OpenInterpreterClient:
             params["model"] = self._config.model
         if self._config.model_provider:
             params["modelProvider"] = self._config.model_provider
+        mcp_config = {
+            f"mcp_servers.{server.name}.{key}": value
+            for server in self._config.mcp_servers
+            if server.enabled
+            for key, value in (
+                ("command", server.command),
+                ("args", server.args),
+                ("env", server.env),
+            )
+        }
+        if mcp_config:
+            params["config"] = mcp_config
         logger.info("Creating thread with params: %s", _safe_params(params))
         result = self._transport.request(
             "thread/start", params, timeout=self._config.connect_timeout
@@ -129,6 +141,12 @@ class OpenInterpreterClient:
         logger.info("Thread created: id=%s", thread_id)
         self._thread_id = thread_id
         return thread_id
+
+    def mcp_status(self) -> Any:
+        assert self._transport is not None
+        return self._transport.request(
+            "mcpServerStatus/list", {}, timeout=self._config.request_timeout
+        )
 
     def send_message(
         self,
@@ -240,6 +258,8 @@ def _safe_params(params: dict[str, Any]) -> dict[str, Any]:
     for k, v in params.items():
         if "key" in k.lower() or "secret" in k.lower():
             safe[k] = "***"
+        elif isinstance(v, dict):
+            safe[k] = _safe_params(v)
         else:
             safe[k] = v
     return safe

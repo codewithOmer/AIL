@@ -3,6 +3,15 @@ from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
+class MCPServerConfig:
+    name: str
+    command: str
+    args: list[str] = field(default_factory=list)
+    env: dict[str, str] = field(default_factory=dict)
+    enabled: bool = True
+
+
+@dataclass(frozen=True)
 class OIConfig:
     """Configuration for the Open Interpreter App Server adapter.
 
@@ -49,3 +58,4 @@ class OIConfig:
             if a.strip()
         ]
     )
+    mcp_servers: list[MCPServerConfig] = field(default_factory=list)
