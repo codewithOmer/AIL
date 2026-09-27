@@ -28,3 +28,6 @@ class Config:
         "https://openrouter.ai/api/v1"
     )
     oi_executable = os.getenv("AIL_OI_EXECUTABLE", "interpreter")
+    stt_model = os.getenv("AIL_STT_MODEL", "tiny")
+    stt_device = os.getenv("AIL_STT_DEVICE", "auto")
+    stt_compute_type = os.getenv("AIL_STT_COMPUTE_TYPE", "int8")
