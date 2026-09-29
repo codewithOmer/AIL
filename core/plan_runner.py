@@ -13,10 +13,12 @@ authority for step success.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from core.planner import validate_plan
 from core.recovery import execute_with_recovery
+from interfaces.image import LocalImage
 from interfaces.planning import (
     ExecutionReport,
     Goal,
@@ -61,17 +63,32 @@ class PlanRunner:
         self.replanner = replanner
         self.timeout = timeout
 
-    def run(self, goal: Goal) -> ExecutionReport:
+    def run(
+        self,
+        goal: Goal,
+        *,
+        images: Sequence[LocalImage] | None = None,
+    ) -> ExecutionReport:
         """Plan *goal*, execute its steps, and return the final report."""
         plan = self.planner.plan(goal)
-        return self._run_with_replanning(plan)
+        return self._run_with_replanning(plan, images=images)
 
-    def run_plan(self, plan: Plan) -> ExecutionReport:
+    def run_plan(
+        self,
+        plan: Plan,
+        *,
+        images: Sequence[LocalImage] | None = None,
+    ) -> ExecutionReport:
         """Execute an existing :class:`Plan` and return the final report."""
-        return self._run_with_replanning(plan)
+        return self._run_with_replanning(plan, images=images)
 
-    def _run_with_replanning(self, plan: Plan) -> ExecutionReport:
-        initial = self._execute_plan(plan)
+    def _run_with_replanning(
+        self,
+        plan: Plan,
+        *,
+        images: Sequence[LocalImage] | None = None,
+    ) -> ExecutionReport:
+        initial = self._execute_plan(plan, images=images)
         if initial.passed or self.replanner is None:
             return initial
 
@@ -84,7 +101,7 @@ class PlanRunner:
         except ValueError:
             return initial
 
-        final = self._execute_plan(replacement)
+        final = self._execute_plan(replacement, images=images)
         return ExecutionReport(
             goal=final.goal,
             passed=final.passed,
@@ -92,7 +109,12 @@ class PlanRunner:
             attempts=initial.attempts + final.attempts,
         )
 
-    def _execute_plan(self, plan: Plan) -> ExecutionReport:
+    def _execute_plan(
+        self,
+        plan: Plan,
+        *,
+        images: Sequence[LocalImage] | None = None,
+    ) -> ExecutionReport:
         validate_plan(plan)
 
         results: list[StepResult] = []
@@ -140,6 +162,7 @@ class PlanRunner:
                         else self.default_max_attempts
                     ),
                     timeout=self.timeout,
+                    images=images,
                 )
                 status = StepStatus.PASSED if recovery.passed else StepStatus.FAILED
                 results.append(

@@ -5,12 +5,19 @@ These tests do NOT require the actual OI server.
 
 import json
 import threading
+import tempfile
 import unittest
 from io import BytesIO
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from integrations.open_interpreter.client import OpenInterpreterClient, _safe_params
+from integrations.open_interpreter.client import (
+    OIResponse as ClientResponse,
+    OpenInterpreterClient,
+    _safe_params,
+)
 from integrations.open_interpreter.config import MCPServerConfig, OIConfig
+from interfaces.image import LocalImage
 from integrations.open_interpreter.protocol import (
     OIError,
     OINotification,
@@ -121,6 +128,73 @@ class TestTransportUnit(unittest.TestCase):
 
 
 class TestClientUnit(unittest.TestCase):
+    def _send_message_params(self, images=None) -> dict:
+        transport = MagicMock()
+        transport.request.return_value = {"turn": {"id": "turn-1"}}
+        client = OpenInterpreterClient(OIConfig())
+        client._transport = transport
+        client._thread_id = "thread-1"
+        completed = ClientResponse("done", "thread-1", "turn-1")
+        with patch.object(client, "_wait_for_turn_completion", return_value=completed):
+            result = client.send_message("describe", images=images)
+        self.assertIs(result, completed)
+        return transport.request.call_args.args[1]
+
+    def test_text_only_turn_payload_remains_unchanged(self) -> None:
+        self.assertEqual(
+            self._send_message_params(),
+            {
+                "threadId": "thread-1",
+                "input": [{"type": "text", "text": "describe"}],
+            },
+        )
+
+    def test_local_image_serializes_to_current_oi_protocol(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "image.png"
+            path.write_bytes(b"not decoded by the client")
+
+            params = self._send_message_params(
+                [LocalImage.from_path(path, detail="high")]
+            )
+
+        self.assertEqual(
+            params["input"],
+            [
+                {
+                    "type": "localImage",
+                    "path": str(path.resolve()),
+                    "detail": "high",
+                },
+                {"type": "text", "text": "describe"},
+            ],
+        )
+
+    def test_multiple_local_images_are_serialized_in_order(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            paths = [Path(directory) / "one.png", Path(directory) / "two.png"]
+            for path in paths:
+                path.write_bytes(b"image")
+
+            params = self._send_message_params([str(path) for path in paths])
+
+        self.assertEqual(
+            params["input"],
+            [
+                {"type": "localImage", "path": str(path.resolve())}
+                for path in paths
+            ]
+            + [{"type": "text", "text": "describe"}],
+        )
+
+    def test_missing_or_non_file_image_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            missing = Path(directory) / "missing.png"
+            with self.assertRaisesRegex(ValueError, "does not exist"):
+                self._send_message_params([missing])
+            with self.assertRaisesRegex(ValueError, "not a file"):
+                self._send_message_params([Path(directory)])
+
     def test_config_defaults(self):
         config = OIConfig()
         self.assertEqual(config.approval_policy, "never")

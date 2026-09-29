@@ -7,8 +7,10 @@ not implemented yet.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
+from interfaces.image import LocalImage
 from interfaces.verification import VerificationResult
 
 if TYPE_CHECKING:
@@ -23,6 +25,7 @@ def execute_and_verify(
     thread_id: str | None = None,
     base_dir: str = ".",
     timeout: float | None = None,
+    images: Sequence[LocalImage] | None = None,
 ) -> tuple[OIResponse, VerificationResult]:
     """Execute *message* via *client*, then independently verify the outcome.
 
@@ -32,12 +35,18 @@ def execute_and_verify(
     4. Returns both the OI response and the ``VerificationResult``.
     """
     if timeout is None:
-        response = client.send_message(message, thread_id=thread_id)
+        if images:
+            response = client.send_message(
+                message,
+                thread_id=thread_id,
+                images=images,
+            )
+        else:
+            response = client.send_message(message, thread_id=thread_id)
     else:
-        response = client.send_message(
-            message,
-            thread_id=thread_id,
-            timeout=timeout,
-        )
+        kwargs: dict[str, Any] = {"thread_id": thread_id, "timeout": timeout}
+        if images:
+            kwargs["images"] = images
+        response = client.send_message(message, **kwargs)
     result = verifier.verify(expectations, base_dir)
     return response, result

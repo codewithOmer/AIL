@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,7 @@ from core.planner import DeterministicFileReplanner, SupportedFileTaskPlanner
 from integrations.open_interpreter.client import OpenInterpreterClient
 from integrations.open_interpreter.config import OIConfig
 from integrations.personalai.memory import PersonalAIMemoryStore
+from interfaces.image import LocalImage
 from interfaces.intent import IntentKind, IntentRouter
 from interfaces.planning import ExecutionReport, Planner, Replanner
 from memory.flow import extract_explicit_facts, store_if_new
@@ -75,18 +77,30 @@ class AILApplication:
             owns_client=client is None,
         )
 
-    def run(self, message: str, *, top_k: int = 3) -> ExecutionReport:
+    def run(
+        self,
+        message: str,
+        *,
+        top_k: int = 3,
+        images: Sequence[LocalImage] | None = None,
+    ) -> ExecutionReport:
         """Run a task through the existing Agent pipeline."""
-        return self.agent.run(message, top_k=top_k)
+        return self.agent.run(message, top_k=top_k, images=images)
 
     def handle(
-        self, message: str, *, top_k: int = 3
+        self,
+        message: str,
+        *,
+        top_k: int = 3,
+        images: Sequence[LocalImage] | None = None,
     ) -> ExecutionReport | tuple[Memory, ...]:
         """Route one message to either memory writing or task execution."""
         intent = self.intent_router.route(message)
         if intent.kind is IntentKind.MEMORY:
+            if images:
+                raise ValueError("images are only supported for task messages")
             return self.remember(message)
-        return self.agent.run(message, top_k=top_k)
+        return self.agent.run(message, top_k=top_k, images=images)
 
     def remember(self, message: str) -> tuple[Memory, ...]:
         stored: list[Memory] = []

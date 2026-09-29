@@ -8,9 +8,11 @@ commands or perform destructive actions.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from core.actions import execute_and_verify
+from interfaces.image import LocalImage
 from interfaces.recovery import RecoveryResult, RecoveryStrategy
 from interfaces.verification import VerificationResult
 
@@ -56,6 +58,7 @@ def execute_with_recovery(
     strategy: RecoveryStrategy | None = None,
     max_attempts: int = 2,
     timeout: float | None = None,
+    images: Sequence[LocalImage] | None = None,
 ) -> RecoveryResult:
     """Execute and verify up to *max_attempts* times, recovering on failure.
 
@@ -82,6 +85,7 @@ def execute_with_recovery(
             thread_id=thread_id,
             base_dir=base_dir,
             timeout=timeout,
+            images=images,
         )
         history.append(result)
 

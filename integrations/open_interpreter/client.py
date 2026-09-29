@@ -13,6 +13,8 @@ from __future__ import annotations
 import logging
 import os
 import time
+from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 from integrations.open_interpreter.config import OIConfig
@@ -22,6 +24,7 @@ from integrations.open_interpreter.transport import (
     OITransportClosed,
     OITransportError,
 )
+from interfaces.image import LocalImage
 
 logger = logging.getLogger(__name__)
 
@@ -153,16 +156,27 @@ class OpenInterpreterClient:
         message: str,
         thread_id: str | None = None,
         timeout: float | None = None,
+        images: Sequence[LocalImage | str | Path] | None = None,
     ) -> OIResponse:
         tid = thread_id or self._thread_id
         if tid is None:
             tid = self.create_thread()
         assert self._transport is not None
         req_timeout = timeout or self._config.request_timeout
-        params: dict[str, Any] = {
-            "threadId": tid,
-            "input": [{"type": "text", "text": message}],
-        }
+        inputs: list[dict[str, Any]] = []
+        for image in images or ():
+            local_image = (
+                image if isinstance(image, LocalImage) else LocalImage.from_path(image)
+            )
+            image_input: dict[str, Any] = {
+                "type": "localImage",
+                "path": str(local_image.validated_path()),
+            }
+            if local_image.detail is not None:
+                image_input["detail"] = local_image.detail
+            inputs.append(image_input)
+        inputs.append({"type": "text", "text": message})
+        params: dict[str, Any] = {"threadId": tid, "input": inputs}
         logger.info("Sending turn to thread %s", tid)
         result = self._transport.request(
             "turn/start", params, timeout=req_timeout

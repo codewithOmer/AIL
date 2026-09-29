@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
+from interfaces.image import LocalImage
 from interfaces.llm import LLM
 from interfaces.planning import ExecutionReport, Goal
 from memory.flow import apply_context
@@ -36,7 +38,13 @@ class Agent:
             raise RuntimeError("respond() is only available in legacy LLM mode")
         return self.llm.generate(user_input)
 
-    def run(self, goal: str | Goal, *, top_k: int = 3) -> ExecutionReport:
+    def run(
+        self,
+        goal: str | Goal,
+        *,
+        top_k: int = 3,
+        images: Sequence[LocalImage] | None = None,
+    ) -> ExecutionReport:
         """Recall context, execute the contextual goal, and return its report."""
         if self.memory_store is None or self.plan_runner is None:
             raise RuntimeError("run() requires a memory store and plan runner")
@@ -49,4 +57,6 @@ class Agent:
         contextual_goal = Goal(
             apply_context(original_goal.description, recalled)
         )
+        if images:
+            return self.plan_runner.run(contextual_goal, images=images)
         return self.plan_runner.run(contextual_goal)
