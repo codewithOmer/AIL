@@ -50,7 +50,7 @@ class LocalWhisperTranscriber(Transcriber):
         language: str | None = None,
     ) -> None:
         self._model = model or os.getenv("AIL_STT_MODEL", "tiny")
-        self._device = device or os.getenv("AIL_STT_DEVICE", "auto")
+        self._device = device or os.getenv("AIL_STT_DEVICE", "cpu")
         self._compute_type = compute_type or os.getenv(
             "AIL_STT_COMPUTE_TYPE", "int8"
         )

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import patch
+from io import StringIO
+from unittest.mock import AsyncMock, patch
 
 from core.application import AILApplication
 from interfaces.planning import ExecutionReport, Goal
@@ -49,6 +50,21 @@ class TestMain(unittest.TestCase):
         )
         self.assertTrue(application.closed)
         printer.assert_called_once_with("AIL: verified task completed")
+
+    def test_voice_mode_reports_pipeline_errors_and_closes_application(self) -> None:
+        application = FakeApplication()
+        with (
+            patch.object(AILApplication, "create", return_value=application),
+            patch(
+                "core.voice.VoiceService.run_once",
+                new=AsyncMock(side_effect=RuntimeError("speaker unavailable")),
+            ),
+            patch("sys.stderr", new_callable=StringIO) as stderr,
+        ):
+            main.run_voice_mode()
+
+        self.assertTrue(application.closed)
+        self.assertIn("Voice error: speaker unavailable", stderr.getvalue())
 
 
 if __name__ == "__main__":

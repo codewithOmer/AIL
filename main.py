@@ -5,6 +5,7 @@ long-term memory: recall relevant memories before each turn, and store a
 small set of explicit user-provided facts after each turn.
 """
 
+import asyncio
 import sys
 
 from core.agent import Agent, MockLLM
@@ -59,6 +60,48 @@ def run_oi_mode() -> None:
             application.close()
 
 
+def run_voice_mode() -> None:
+    """Run one fixed-window microphone -> AIL -> speaker turn."""
+    from core.application import AILApplication
+    from core.config import Config
+    from core.voice import VoiceService
+    from integrations.audio.microphone import MicrophoneError, SoundDeviceMicrophone
+    from integrations.open_interpreter.client import OIError
+    from integrations.personalai.local_whisper import LocalWhisperTranscriber
+    from integrations.tts.edge_tts import EdgeTTS, WindowsAudioPlayer
+
+    application: AILApplication | None = None
+    try:
+        application = AILApplication.create()
+        service = VoiceService(
+            audio_input=SoundDeviceMicrophone(
+                sample_rate=Config.voice_sample_rate,
+                duration=Config.voice_record_seconds,
+            ),
+            transcriber=LocalWhisperTranscriber(
+                model=Config.stt_model,
+                device=Config.stt_device,
+                compute_type=Config.stt_compute_type,
+            ),
+            application=application,
+            synthesizer=EdgeTTS(
+                voice=Config.tts_voice,
+                rate=Config.tts_rate,
+                volume=Config.tts_volume,
+            ),
+            player=WindowsAudioPlayer(),
+        )
+        print("Listening...")
+        result = asyncio.run(service.run_once())
+        print(f"You said: {result.transcription}")
+        print(f"AIL: {result.response}")
+    except (MicrophoneError, OIError, RuntimeError, UnsupportedTaskError, ValueError) as exc:
+        print(f"Voice error: {exc}", file=sys.stderr)
+    finally:
+        if application is not None:
+            application.close()
+
+
 def _print_report(report) -> None:
     """Print a concise result using only the verified execution report."""
     if report.passed:
@@ -86,7 +129,9 @@ def _print_report(report) -> None:
 def main() -> None:
     setup_logging()
     mode = sys.argv[1] if len(sys.argv) > 1 else "mock"
-    if mode == "oi":
+    if mode == "voice":
+        run_voice_mode()
+    elif mode == "oi":
         run_oi_mode()
     else:
         run_mock_mode()
