@@ -26,6 +26,7 @@ import logging
 import math
 import re
 import sys
+import threading
 import uuid
 import zlib
 from datetime import datetime, timezone
@@ -91,6 +92,31 @@ _AIL_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_MEMORY_FILE = _AIL_ROOT / "data" / "memory.json"
 
 
+def _run_in_worker_thread(coro) -> Any:  # noqa: ANN001
+    """Run *coro* on a private event loop in a worker thread and return it.
+
+    Used when the calling thread already has a running event loop and therefore
+    cannot start another one. The loop is created and closed inside the worker
+    thread, so no global event-loop state is read or mutated. Exceptions are
+    re-raised in the calling thread with their original traceback.
+    """
+    result: list[Any] = []
+    failure: list[BaseException] = []
+
+    def worker() -> None:
+        try:
+            result.append(asyncio.run(coro))
+        except BaseException as exc:  # noqa: BLE001 - re-raised below
+            failure.append(exc)
+
+    thread = threading.Thread(target=worker, name="ail-memory-loop", daemon=True)
+    thread.start()
+    thread.join()
+    if failure:
+        raise failure[0]
+    return result[0]
+
+
 class PersonalAIMemoryStore(MemoryStore):
     """In-memory memory store that persists to a JSON snapshot file."""
 
@@ -102,7 +128,20 @@ class PersonalAIMemoryStore(MemoryStore):
     # -- helpers ----------------------------------------------------------
 
     def _run(self, coro):  # noqa: ANN001
-        return asyncio.run(coro)
+        """Drive *coro* to completion from synchronous code.
+
+        ``asyncio.run`` may only be used when this thread has no running
+        event loop.  Voice mode calls the synchronous ``MemoryStore`` API from
+        inside ``VoiceService.run_once``'s loop, so detect that case and drive
+        the coroutine on a private loop owned by a short-lived worker thread
+        instead of nesting into the caller's loop.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            # No event loop in this thread: asyncio.run is safe and cheapest.
+            return asyncio.run(coro)
+        return _run_in_worker_thread(coro)
 
     def _embed(self, text: str):
         result = self._run(_PROVIDER.embed([text], _MODEL))

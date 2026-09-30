@@ -6,9 +6,11 @@ No database, no external model, no OI integration.
 
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import unittest
 import uuid
+import warnings
 from pathlib import Path
 
 from interfaces.memory import Memory, MemoryStore  # noqa: E402
@@ -118,6 +120,63 @@ class TestLifecycle(unittest.TestCase):
         store.delete(mem.id)
         self.assertIsNone(store.get(mem.id))
         self.assertEqual(len(store.list_all()), 0)
+
+
+class TestSyncBridgeFromRunningEventLoop(unittest.TestCase):
+    """Regression: the synchronous MemoryStore API must also work when the
+    caller is already inside a running event loop (voice mode calls
+    ``application.handle()`` from within ``VoiceService.run_once``)."""
+
+    def test_run_bridge_executes_when_caller_has_running_loop(self) -> None:
+        store = _make_store()
+
+        async def work() -> int:
+            await asyncio.sleep(0)
+            return store._run(asyncio.sleep(0, result=42))
+
+        self.assertEqual(asyncio.run(work()), 42)
+
+    def test_store_and_recall_work_from_running_loop(self) -> None:
+        store = _make_store()
+
+        async def work() -> tuple[str, list[str]]:
+            await asyncio.sleep(0)
+            stored = store.store("My name is Omer.")
+            recalled = [m.text for m in store.recall("What is my name?")]
+            return stored.text, recalled
+
+        text, recalled = asyncio.run(work())
+        self.assertEqual(text, "My name is Omer.")
+        self.assertIn("Omer", recalled[0])
+
+    def test_no_never_awaited_warning_is_emitted(self) -> None:
+        store = _make_store()
+
+        async def work() -> None:
+            await asyncio.sleep(0)
+            store.store("The coroutine must be awaited.")
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            asyncio.run(work())
+
+        never_awaited = [str(w.message) for w in caught if "never awaited" in str(w.message)]
+        self.assertEqual(never_awaited, [])
+
+    def test_exceptions_propagate_from_running_loop(self) -> None:
+        store = _make_store()
+
+        async def boom() -> None:
+            raise ValueError("store exploded")
+
+        async def work() -> None:
+            await asyncio.sleep(0)
+            store._run(boom())
+
+        # Runs from inside a running loop, so this exercises the worker-thread
+        # branch of _run and asserts the original error is re-raised.
+        with self.assertRaisesRegex(ValueError, "store exploded"):
+            asyncio.run(work())
 
 
 if __name__ == "__main__":
