@@ -1,0 +1,29 @@
+# AIL runtime dependencies
+#
+# This file contains ONLY what a normal AIL runtime needs (text/OI task mode).
+# Voice mode has additional dependencies: see requirements-voice.txt
+#
+#   pip install -r requirements.txt
+#   pip install -r requirements.txt -r requirements-voice.txt   # + voice mode
+#
+# Classification
+# --------------
+# A. Required runtime dependency
+#      python-dotenv  - imported by core/config.py (loads .env)
+# D. Required by a local/external repository dependency
+#      pydantic       - required by the sibling `personal-ai` repo's
+#                       `personalai_contracts` package, which AIL imports at
+#                       runtime through integrations/personalai/memory.py.
+#                       Matches that package's own constraint (>=2.7).
+#
+# NOT listed here on purpose:
+#   - faster-whisper, sounddevice, edge-tts, playsound3  -> requirements-voice.txt
+#   - pytest, ruff, mypy                                -> not used by the project
+#   - numpy, ctranslate2, onnxruntime, av, ...          -> transitive deps pulled
+#                                                           in automatically
+
+# --- A. Required runtime dependency ---
+python-dotenv>=1.0
+
+# --- D. Required by the external personal-ai contracts dependency ---
+pydantic>=2.7

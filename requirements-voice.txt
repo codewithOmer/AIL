@@ -1,3 +1,7 @@
+# Voice-mode-only dependencies (microphone capture, STT, TTS, playback).
+# Install on top of requirements.txt, which is required for all AIL modes:
+#   pip install -r requirements.txt -r requirements-voice.txt
+# Do not duplicate these in requirements.txt.
 faster-whisper>=1.1
 sounddevice>=0.5.6
 edge-tts>=7.0
