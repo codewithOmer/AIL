@@ -2,13 +2,7 @@
 
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
-
-AIL_ROOT = str(Path(__file__).resolve().parents[1])
-if AIL_ROOT not in sys.path:
-    sys.path.insert(0, AIL_ROOT)
 
 from core.agent import Agent, MockLLM  # noqa: E402
 from interfaces.planning import ExecutionReport, Goal  # noqa: E402

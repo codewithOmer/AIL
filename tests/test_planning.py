@@ -5,15 +5,8 @@ Covers deterministic plan creation and integrity validation.
 
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
 from typing import Any
-
-# Ensure AIL root is importable.
-AIL_ROOT = str(Path(__file__).resolve().parents[1])
-if AIL_ROOT not in sys.path:
-    sys.path.insert(0, AIL_ROOT)
 
 from core.planner import (  # noqa: E402
     DeterministicMultiStepPlanner,

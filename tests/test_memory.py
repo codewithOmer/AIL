@@ -6,16 +6,10 @@ No database, no external model, no OI integration.
 
 from __future__ import annotations
 
-import sys
 import tempfile
 import unittest
 import uuid
 from pathlib import Path
-
-# Ensure AIL root is importable.
-AIL_ROOT = str(Path(__file__).resolve().parents[1])
-if AIL_ROOT not in sys.path:
-    sys.path.insert(0, AIL_ROOT)
 
 from interfaces.memory import Memory, MemoryStore  # noqa: E402
 from integrations.personalai.memory import PersonalAIMemoryStore  # noqa: E402

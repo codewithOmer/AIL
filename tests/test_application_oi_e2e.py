@@ -4,14 +4,11 @@ from __future__ import annotations
 
 import os
 import shutil
-import sys
 import unittest
 import uuid
 from pathlib import Path
 
 AIL_ROOT = str(Path(__file__).resolve().parents[1])
-if AIL_ROOT not in sys.path:
-    sys.path.insert(0, AIL_ROOT)
 
 from core.application import AILApplication  # noqa: E402
 from integrations.open_interpreter.config import OIConfig  # noqa: E402

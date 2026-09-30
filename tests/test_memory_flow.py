@@ -2,16 +2,10 @@
 
 from __future__ import annotations
 
-import sys
 import tempfile
 import unittest
 import uuid
 from pathlib import Path
-
-# Ensure AIL root is importable.
-AIL_ROOT = str(Path(__file__).resolve().parents[1])
-if AIL_ROOT not in sys.path:
-    sys.path.insert(0, AIL_ROOT)
 
 # Isolated temp dir so these tests never read/write the default
 # persistent memory file (data/memory.json).

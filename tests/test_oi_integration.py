@@ -14,8 +14,6 @@ If the OI binary is not available, it reports the exact blocker.
 
 Usage:
     python -m tests.test_oi_integration
-    or
-    python tests/test_oi_integration.py
 """
 
 from __future__ import annotations
@@ -24,10 +22,6 @@ import os
 import shutil
 import sys
 import time
-
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
 
 from integrations.open_interpreter.config import OIConfig
 from integrations.open_interpreter.client import (

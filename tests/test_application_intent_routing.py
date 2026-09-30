@@ -3,14 +3,9 @@
 from __future__ import annotations
 
 import shutil
-import sys
 import tempfile
 import unittest
 from pathlib import Path
-
-AIL_ROOT = str(Path(__file__).resolve().parents[1])
-if AIL_ROOT not in sys.path:
-    sys.path.insert(0, AIL_ROOT)
 
 from core.application import AILApplication  # noqa: E402
 from core.planner import UnsupportedTaskError  # noqa: E402

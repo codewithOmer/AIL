@@ -4,14 +4,11 @@ from __future__ import annotations
 
 import os
 import shutil
-import sys
 import unittest
 import uuid
 from pathlib import Path
 
 AIL_ROOT = str(Path(__file__).resolve().parents[1])
-if AIL_ROOT not in sys.path:
-    sys.path.insert(0, AIL_ROOT)
 
 from core.agent import Agent  # noqa: E402
 from core.plan_runner import PlanRunner  # noqa: E402
