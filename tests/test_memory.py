@@ -17,7 +17,7 @@ AIL_ROOT = str(Path(__file__).resolve().parents[1])
 if AIL_ROOT not in sys.path:
     sys.path.insert(0, AIL_ROOT)
 
-from memory.interface import Memory, MemoryStore  # noqa: E402
+from interfaces.memory import Memory, MemoryStore  # noqa: E402
 from integrations.personalai.memory import PersonalAIMemoryStore  # noqa: E402
 
 # Isolated temp dir so these tests never read/write the default

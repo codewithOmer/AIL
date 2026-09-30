@@ -24,7 +24,7 @@ from interfaces.planning import (  # noqa: E402
     Planner,
     StepStatus,
 )
-from memory.interface import Memory, MemoryStore  # noqa: E402
+from interfaces.memory import Memory, MemoryStore  # noqa: E402
 from core.verification import FileExpectation, FilesystemVerifier  # noqa: E402
 
 

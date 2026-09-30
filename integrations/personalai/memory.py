@@ -46,7 +46,7 @@ from personalai_contracts.testing import (  # noqa: E402
     InMemoryMemoryStore,
 )
 
-from memory.interface import Memory, MemoryStore  # noqa: E402
+from interfaces.memory import Memory, MemoryStore  # noqa: E402
 
 _LOGGER = logging.getLogger(__name__)
 

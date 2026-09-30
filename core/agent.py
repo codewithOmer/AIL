@@ -5,9 +5,9 @@ from typing import TYPE_CHECKING
 
 from interfaces.image import LocalImage
 from interfaces.llm import LLM
+from interfaces.memory import MemoryStore
 from interfaces.planning import ExecutionReport, Goal
 from memory.flow import apply_context
-from memory.interface import MemoryStore
 
 if TYPE_CHECKING:
     from core.plan_runner import PlanRunner

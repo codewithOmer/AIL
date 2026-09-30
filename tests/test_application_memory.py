@@ -16,7 +16,7 @@ from core.agent import Agent  # noqa: E402
 from core.application import AILApplication  # noqa: E402
 from interfaces.planning import ExecutionReport, Goal  # noqa: E402
 from integrations.personalai.memory import PersonalAIMemoryStore  # noqa: E402
-from memory.interface import Memory, MemoryStore  # noqa: E402
+from interfaces.memory import Memory, MemoryStore  # noqa: E402
 
 
 class RecordingRunner:

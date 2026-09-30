@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 
-from memory.interface import Memory, MemoryStore
+from interfaces.memory import Memory, MemoryStore
 
 _MEMORY_HEADER = "[Memory context from previous conversations:]"
 

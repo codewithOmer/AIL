@@ -16,7 +16,7 @@ if AIL_ROOT not in sys.path:
 from core.application import AILApplication  # noqa: E402
 from integrations.open_interpreter.config import OIConfig  # noqa: E402
 from interfaces.planning import ExecutionReport  # noqa: E402
-from memory.interface import Memory, MemoryStore  # noqa: E402
+from interfaces.memory import Memory, MemoryStore  # noqa: E402
 
 
 def _find_oi_executable() -> str | None:

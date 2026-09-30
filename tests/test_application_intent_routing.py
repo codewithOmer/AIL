@@ -15,7 +15,7 @@ if AIL_ROOT not in sys.path:
 from core.application import AILApplication  # noqa: E402
 from core.planner import UnsupportedTaskError  # noqa: E402
 from interfaces.planning import ExecutionReport  # noqa: E402
-from memory.interface import Memory, MemoryStore  # noqa: E402
+from interfaces.memory import Memory, MemoryStore  # noqa: E402
 
 
 class RecordingMemoryStore(MemoryStore):

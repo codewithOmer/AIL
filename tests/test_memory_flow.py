@@ -28,7 +28,7 @@ from memory.flow import (  # noqa: E402
     extract_explicit_facts,
     store_if_new,
 )
-from memory.interface import Memory  # noqa: E402
+from interfaces.memory import Memory  # noqa: E402
 from integrations.personalai.memory import PersonalAIMemoryStore  # noqa: E402
 
 

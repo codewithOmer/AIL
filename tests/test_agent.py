@@ -12,7 +12,7 @@ if AIL_ROOT not in sys.path:
 
 from core.agent import Agent, MockLLM  # noqa: E402
 from interfaces.planning import ExecutionReport, Goal  # noqa: E402
-from memory.interface import Memory, MemoryStore  # noqa: E402
+from interfaces.memory import Memory, MemoryStore  # noqa: E402
 
 
 class FakeMemoryStore(MemoryStore):

@@ -28,7 +28,7 @@ from interfaces.planning import (  # noqa: E402
     StepStatus,
 )
 from integrations.open_interpreter.config import OIConfig  # noqa: E402
-from memory.interface import Memory, MemoryStore  # noqa: E402
+from interfaces.memory import Memory, MemoryStore  # noqa: E402
 from core.verification import FileExpectation  # noqa: E402
 
 
