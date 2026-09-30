@@ -6,7 +6,7 @@ import types
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from integrations.personalai import local_whisper
+from voice.stt import local_whisper
 from interfaces.transcription import Transcriber, Transcription
 
 

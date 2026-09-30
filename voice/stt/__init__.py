@@ -1,0 +1,1 @@
+"""Voice speech-to-text adapters."""

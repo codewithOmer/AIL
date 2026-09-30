@@ -56,7 +56,7 @@ class TestMain(unittest.TestCase):
         with (
             patch.object(AILApplication, "create", return_value=application),
             patch(
-                "core.voice.VoiceService.run_once",
+                "voice.service.VoiceService.run_once",
                 new=AsyncMock(side_effect=RuntimeError("speaker unavailable")),
             ),
             patch("sys.stderr", new_callable=StringIO) as stderr,

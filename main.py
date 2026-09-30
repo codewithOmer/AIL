@@ -64,11 +64,11 @@ def run_voice_mode() -> None:
     """Run one fixed-window microphone -> AIL -> speaker turn."""
     from core.application import AILApplication
     from core.config import Config
-    from core.voice import VoiceService
-    from integrations.audio.microphone import MicrophoneError, SoundDeviceMicrophone
     from integrations.open_interpreter.client import OIError
-    from integrations.personalai.local_whisper import LocalWhisperTranscriber
-    from integrations.tts.edge_tts import EdgeTTS, WindowsAudioPlayer
+    from voice.audio.sounddevice_microphone import MicrophoneError, SoundDeviceMicrophone
+    from voice.service import VoiceService
+    from voice.stt.local_whisper import LocalWhisperTranscriber
+    from voice.tts.edge_tts import EdgeTTS, WindowsAudioPlayer
 
     application: AILApplication | None = None
     try:

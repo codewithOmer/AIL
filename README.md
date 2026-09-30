@@ -30,7 +30,7 @@ pass or fail from that evidence alone.
 | **Recovery** | Implemented. Bounded retry loop; the strategy only rewrites the next message, never invents commands. | `core/recovery.py` |
 | **Memory** | Implemented. Recall relevant memories before each turn; store a small set of explicit user facts after. JSON-persisted so it survives restarts. | `memory/`, `integrations/personalai/memory.py` |
 | **Intent routing** | Implemented. Classifies a message as a memory write or a task. | `core/intent_router.py` |
-| **Voice** | Implemented. One fixed-window turn: microphone → Whisper STT → AIL → Edge TTS → speaker. | `core/voice.py`, `integrations/audio/`, `integrations/tts/` |
+| **Voice** | Implemented. One fixed-window turn: microphone → Whisper STT → AIL → Edge TTS → speaker. | `voice/service.py`, `voice/audio/`, `voice/stt/`, `voice/tts/` |
 | **Image input** | Partial. A validated local image path can be passed to the executor. There is **no** image understanding, analysis, or model-based captioning. | `interfaces/image.py` |
 | **Open Interpreter adapter** | Implemented. Subprocess lifecycle, JSON-RPC over stdio, streamed turn completion. | `integrations/open_interpreter/` |
 | **MCP** | Config only. `MCPServerConfig` entries are forwarded to the executor's `thread/start`. There is **no** MCP client in AIL. | `integrations/open_interpreter/config.py` |
@@ -148,8 +148,9 @@ python -m unittest \
   tests.test_image tests.test_intent_router tests.test_main \
   tests.test_memory tests.test_memory_flow tests.test_memory_persistence \
   tests.test_oi_adapter tests.test_planning tests.test_plan_runner \
-  tests.test_recovery tests.test_transcription tests.test_verification \
-  tests.test_voice
+  tests.test_recovery tests.test_verification \
+  voice.tests.test_microphone voice.tests.test_service \
+  voice.tests.test_transcriber voice.tests.test_tts_playback
 ```
 
 ## External dependencies
