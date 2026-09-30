@@ -20,7 +20,7 @@ if AIL_ROOT not in sys.path:
 
 from core.actions import execute_and_verify  # noqa: E402
 from interfaces.verification import VerificationResult  # noqa: E402
-from tools.fs_verifier import FileExpectation, FilesystemVerifier  # noqa: E402
+from core.verification import FileExpectation, FilesystemVerifier  # noqa: E402
 
 
 class FakeClient:

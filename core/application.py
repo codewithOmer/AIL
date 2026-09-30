@@ -19,7 +19,7 @@ from interfaces.intent import IntentKind, IntentRouter
 from interfaces.planning import ExecutionReport, Planner, Replanner
 from memory.flow import extract_explicit_facts, store_if_new
 from memory.interface import Memory, MemoryStore
-from tools.fs_verifier import FilesystemVerifier
+from core.verification import FilesystemVerifier
 
 
 @dataclass

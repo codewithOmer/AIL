@@ -25,7 +25,7 @@ from interfaces.planning import (  # noqa: E402
     StepStatus,
 )
 from memory.interface import Memory, MemoryStore  # noqa: E402
-from tools.fs_verifier import FileExpectation, FilesystemVerifier  # noqa: E402
+from core.verification import FileExpectation, FilesystemVerifier  # noqa: E402
 
 
 def _find_oi_executable() -> str | None:

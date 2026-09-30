@@ -31,7 +31,7 @@ from interfaces.planning import (  # noqa: E402
     StepStatus,
 )
 from interfaces.recovery import RecoveryStrategy  # noqa: E402
-from tools.fs_verifier import FileExpectation, FilesystemVerifier  # noqa: E402
+from core.verification import FileExpectation, FilesystemVerifier  # noqa: E402
 
 TEXT_A = "content a"
 TEXT_B = "content b"

@@ -23,7 +23,7 @@ from core.actions import execute_and_verify  # noqa: E402
 from core.recovery import DefaultRetry, execute_with_recovery  # noqa: E402
 from interfaces.recovery import RecoveryResult, RecoveryStrategy  # noqa: E402
 from interfaces.verification import CheckResult, VerificationResult  # noqa: E402
-from tools.fs_verifier import FileExpectation, FilesystemVerifier  # noqa: E402
+from core.verification import FileExpectation, FilesystemVerifier  # noqa: E402
 
 EXPECTED_TEXT = "recovered content"
 TARGET = "out.txt"
