@@ -10,7 +10,12 @@ from typing import Any
 from core.agent import Agent
 from core.intent_router import DefaultIntentRouter
 from core.plan_runner import PlanRunner
-from core.planner import DeterministicFileReplanner, SupportedFileTaskPlanner
+from core.planner import (
+    DeterministicFileReplanner,
+    FirstMatchPlanner,
+    SupportedFileTaskPlanner,
+    WorkspaceSetupPlanner,
+)
 from integrations.open_interpreter.client import OpenInterpreterClient
 from integrations.open_interpreter.config import OIConfig
 from memory.storage.personalai import PersonalAIMemoryStore
@@ -59,8 +64,12 @@ class AILApplication:
             runtime_client.start()
             thread_id = runtime_client.create_thread(cwd=str(workspace))
 
+        default_planner = FirstMatchPlanner(
+            WorkspaceSetupPlanner(),
+            SupportedFileTaskPlanner(),
+        )
         runner = PlanRunner(
-            planner=planner or SupportedFileTaskPlanner(),
+            planner=planner or default_planner,
             client=runtime_client,
             verifier=verifier or FilesystemVerifier(),
             base_dir=str(workspace),

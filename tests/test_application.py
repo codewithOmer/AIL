@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import tempfile
 import unittest
@@ -11,8 +12,11 @@ from pathlib import Path
 from core.application import AILApplication  # noqa: E402
 from core.planner import (  # noqa: E402
     DeterministicFileReplanner,
+    FirstMatchPlanner,
     SupportedFileTaskPlanner,
+    UnrecognizedTaskError,
     UnsupportedTaskError,
+    WorkspaceSetupPlanner,
 )
 from interfaces.planning import (  # noqa: E402
     ExecutionReport,
@@ -93,6 +97,47 @@ class WritingClient:
                 "remember that I like coffee",
                 encoding="utf-8",
             )
+        return "executor response is not used for verification"
+
+
+class WorkspaceWritingClient:
+    """Materialises the multi-step workspace actions the production planner emits.
+
+    Same contract as :class:`WritingClient`: the response text is never trusted,
+    outcomes are decided by the real ``FilesystemVerifier`` reading the disk.
+    """
+
+    _DIRECTORY_ACTION = re.compile(
+        r"^Create the directory (?P<directory>\S+) in the current workspace\.$"
+    )
+    _FILE_ACTION = re.compile(
+        r"^Create (?P<path>\S+) inside \S+ containing exactly the text "
+        r"(?P<content>.*)\.$"
+    )
+
+    def __init__(self, base_dir: Path, events: list[str]) -> None:
+        self.base_dir = base_dir
+        self.events = events
+        self.calls: list[str] = []
+        self.timeouts: list[float | None] = []
+
+    def send_message(
+        self,
+        message: str,
+        thread_id: str | None = None,
+        timeout: float | None = None,
+    ) -> str:
+        self.events.append("execute")
+        self.calls.append(message)
+        self.timeouts.append(timeout)
+        if match := self._DIRECTORY_ACTION.match(message):
+            (self.base_dir / match.group("directory")).mkdir(
+                parents=True, exist_ok=True
+            )
+        elif match := self._FILE_ACTION.match(message):
+            target = self.base_dir / match.group("path")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(match.group("content"), encoding="utf-8")
         return "executor response is not used for verification"
 
 
@@ -212,7 +257,14 @@ class TestApplication(unittest.TestCase):
         )
         self.assertEqual(
             type(application.agent.plan_runner.planner).__name__,
-            "SupportedFileTaskPlanner",
+            "FirstMatchPlanner",
+        )
+        self.assertEqual(
+            [
+                type(p).__name__
+                for p in application.agent.plan_runner.planner.planners
+            ],
+            ["WorkspaceSetupPlanner", "SupportedFileTaskPlanner"],
         )
         self.assertIsInstance(
             application.agent.plan_runner.replanner,
@@ -335,6 +387,134 @@ class TestApplication(unittest.TestCase):
             attempts=(),
         )
         self.assertIsNone(replanner.replan(supported, unrecoverable_report))
+
+
+class TestProductionWorkspacePlanner(unittest.TestCase):
+    """The composed production planner, exercised through the real
+    application -> planner -> runner -> verifier path with a fake executor.
+    """
+
+    _WORKSPACE_GOAL = (
+        "Set up a project workspace src with a readme containing hello world "
+        "and a config file containing {}"
+    )
+
+    def setUp(self) -> None:
+        self.temp_dir = Path(tempfile.mkdtemp())
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.temp_dir)
+
+    def make_application(self, client=None, planner=None):
+        events: list[str] = []
+        return AILApplication.create(
+            base_dir=self.temp_dir,
+            memory_store=RecordingMemoryStore(events),
+            client=client or WorkspaceWritingClient(self.temp_dir, events),
+            planner=planner,
+            start_client=False,
+        ), events
+
+    # --- 1. workspace goal is reachable and executes ---------------------
+
+    def test_default_planner_executes_valid_workspace_goal(self) -> None:
+        application, _ = self.make_application()
+
+        report = application.run(self._WORKSPACE_GOAL)
+
+        self.assertTrue(report.passed)
+        self.assertEqual(report.goal.description, self._WORKSPACE_GOAL)
+
+    def test_valid_workspace_goal_executes_exactly_three_ordered_steps(self) -> None:
+        application, _ = self.make_application()
+
+        report = application.run(self._WORKSPACE_GOAL)
+
+        self.assertEqual(
+            [step.step_id for step in report.steps],
+            ["create-workspace", "create-readme", "create-config"],
+        )
+        self.assertEqual(
+            [step.status for step in report.steps],
+            [StepStatus.PASSED, StepStatus.PASSED, StepStatus.PASSED],
+        )
+        self.assertTrue((self.temp_dir / "src" / "README.md").is_file())
+        self.assertTrue((self.temp_dir / "src" / "config.json").is_file())
+
+    # --- 2. existing create-file behaviour is preserved ------------------
+
+    def test_default_planner_still_executes_create_file_syntax(self) -> None:
+        events: list[str] = []
+        client = WritingClient(self.temp_dir, events)
+        application, _ = self.make_application(client=client)
+
+        report = application.run("Create a file named hello.txt containing coffee")
+
+        self.assertTrue(report.passed)
+        self.assertEqual([step.step_id for step in report.steps], ["create-file"])
+        expectation = report.attempts[0].plan.steps[0].expectations[0]
+        self.assertEqual(expectation.path, "hello.txt")
+        self.assertEqual(expectation.contains, "coffee")
+        self.assertEqual(len(client.calls), 1)
+
+    # --- 3. explicit planner injection is preserved ----------------------
+
+    def test_explicit_planner_injection_is_preserved(self) -> None:
+        custom = SupportedFileTaskPlanner()
+        application, _ = self.make_application(planner=custom)
+
+        self.assertIs(application.agent.plan_runner.planner, custom)
+
+    def test_explicit_planner_injection_bypasses_the_composite(self) -> None:
+        application, _ = self.make_application(planner=SupportedFileTaskPlanner())
+
+        with self.assertRaises(UnsupportedTaskError):
+            application.run(self._WORKSPACE_GOAL)
+
+    # --- 4. unsafe workspace paths never fall through ---------------------
+
+    def test_unsafe_workspace_path_is_rejected_without_falling_through(self) -> None:
+        application, events = self.make_application()
+
+        for directory in (
+            "../escape",
+            r"..\escape",
+            "/etc",
+            r"C:\outside",
+            "\\\\server\\share",
+        ):
+            with self.subTest(directory=directory):
+                with self.assertRaises(UnsupportedTaskError) as caught:
+                    application.run(
+                        f"set up a project workspace {directory} "
+                        "with a readme containing hi "
+                        "and a config file containing bye"
+                    )
+                # An unsafe path must be an explicit rejection, never a
+                # recognition miss that would fall through to another planner.
+                self.assertNotIsInstance(
+                    caught.exception, UnrecognizedTaskError
+                )
+                self.assertIsInstance(caught.exception, UnsupportedTaskError)
+
+        # Nothing was executed, and nothing escaped the workspace.
+        self.assertEqual(events, ["recall"] * 5)
+        self.assertFalse((self.temp_dir.parent / "escape").exists())
+        self.assertFalse((Path("/etc") / "README.md").exists())
+
+    # --- 5. unrelated goals still raise the normal unsupported error ----
+
+    def test_completely_unsupported_goal_still_raises(self) -> None:
+        application, events = self.make_application()
+
+        with self.assertRaises(UnsupportedTaskError):
+            application.run("Calculate 23 times 19")
+
+        self.assertEqual(events, ["recall"])
+        self.assertEqual(
+            application.agent.plan_runner.replanner.__class__.__name__,
+            "DeterministicFileReplanner",
+        )
 
 
 if __name__ == "__main__":

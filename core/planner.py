@@ -26,6 +26,17 @@ class UnsupportedTaskError(ValueError):
     """Raised when the production deterministic planner cannot handle a goal."""
 
 
+class UnrecognizedTaskError(UnsupportedTaskError):
+    """Raised when a planner does not recognize the goal's syntax at all.
+
+    The distinction from its base class is what makes planner composition safe:
+    a composite may fall through on a recognition miss, but a planner that
+    *recognized* the syntax and rejected the goal (for example because the
+    requested path escapes the workspace) raises the base
+    ``UnsupportedTaskError``, which is never caught during fall-through.
+    """
+
+
 _CREATE_FILE_RE = re.compile(
     r"create\s+(?:(?:a\s+)?file(?:\s+named)?\s+)?"
     r"(?P<filename>[^\s]+)\s+containing\s+(?P<content>.+?)\s*\.?$",
@@ -50,6 +61,41 @@ def _is_safe_filename(filename: str) -> bool:
     )
 
 
+def _is_safe_relative_path(path: str) -> bool:
+    """Accept only a relative path that stays inside the configured workspace.
+
+    Unlike ``_is_safe_filename`` this permits safe relative subdirectories
+    (``src/config/settings.json``) while still rejecting traversal, absolute
+    paths, drive letters and UNC shares.  This is a containment boundary, not a
+    convenience: ``FilesystemVerifier`` joins expectations onto its base
+    directory without confining the result, so planner-side validation is the
+    only thing keeping verification inside the workspace.
+    """
+    if not path or not path.strip():
+        return False
+    if "\x00" in path:
+        return False
+    # Backslashes are rejected outright instead of being treated as separators,
+    # so a Windows-style traversal can never be smuggled through as safe.
+    if "\\" in path:
+        return False
+
+    posix_path = PurePosixPath(path)
+    windows_path = PureWindowsPath(path)
+    if (
+        posix_path.is_absolute()
+        or windows_path.is_absolute()
+        or windows_path.drive
+        or windows_path.root
+    ):
+        return False
+
+    parts = posix_path.parts
+    if not parts:
+        return False
+    return not any(part in {".", ".."} for part in parts)
+
+
 class SupportedFileTaskPlanner(Planner):
     """Plan the narrow, explicitly supported file-creation task shape."""
 
@@ -57,7 +103,7 @@ class SupportedFileTaskPlanner(Planner):
         matches = list(_CREATE_FILE_RE.finditer(goal.description))
         match = matches[-1] if matches else None
         if match is None:
-            raise UnsupportedTaskError(
+            raise UnrecognizedTaskError(
                 "Unsupported task. Supported syntax: "
                 "Create a file named <filename> containing <content>"
             )
@@ -137,6 +183,110 @@ class DeterministicFileReplanner(Replanner):
             max_attempts=step.max_attempts,
         )
         return Plan(goal=plan.goal, steps=(replacement_step,))
+
+
+_SETUP_WORKSPACE_RE = re.compile(
+    r"set\s+up\s+(?:a\s+)?project\s+workspace\s+(?P<dir>[^\s]+)\s+"
+    r"with\s+a\s+readme(?:\s+file)?\s+containing\s+(?P<readme>.+?)\s+"
+    r"and\s+a\s+config(?:\s+file)?\s+containing\s+(?P<config>.+?)\s*\.?$",
+    re.IGNORECASE,
+)
+
+
+class WorkspaceSetupPlanner(Planner):
+    """Plan a deterministic three-step project workspace setup.
+
+    Supported goal shape (narrow and explicit)::
+
+        set up a project workspace <dir> with a readme containing <readme>
+        and a config file containing <config>
+
+    Emits one directory step followed by two file steps that each depend on the
+    directory step, so the plan exercises dependency ordering in the runner.
+    Every step carries at least one :class:`FileExpectation`, which keeps the
+    per-step verification evidence non-vacuous.  Output is fully deterministic:
+    the same goal always produces an identical plan.
+    """
+
+    def plan(self, goal: Goal) -> Plan:
+        matches = list(_SETUP_WORKSPACE_RE.finditer(goal.description))
+        match = matches[-1] if matches else None
+        if match is None:
+            raise UnrecognizedTaskError(
+                "Unsupported task. Supported syntax: set up a project workspace "
+                "<dir> with a readme containing <readme> and a config file "
+                "containing <config>"
+            )
+
+        directory = match.group("dir").rstrip("/")
+        if not _is_safe_relative_path(directory):
+            raise UnsupportedTaskError(
+                "Unsupported task. The workspace path must be a relative path "
+                "inside the configured workspace."
+            )
+
+        readme_content = match.group("readme").strip()
+        config_content = match.group("config").strip()
+        if not readme_content or not config_content:
+            raise UnsupportedTaskError(
+                "Unsupported task. The readme and config contents must be "
+                "non-empty."
+            )
+
+        readme_path = f"{directory}/README.md"
+        config_path = f"{directory}/config.json"
+        for derived_path in (readme_path, config_path):
+            if not _is_safe_relative_path(derived_path):
+                raise UnsupportedTaskError(
+                    "Unsupported task. Derived paths must stay inside the "
+                    "configured workspace."
+                )
+
+        return Plan(
+            goal=goal,
+            steps=(
+                PlanStep(
+                    id="create-workspace",
+                    action=(
+                        f"Create the directory {directory} in the current "
+                        f"workspace."
+                    ),
+                    expectations=(
+                        FileExpectation(path=directory, exists=True),
+                    ),
+                ),
+                PlanStep(
+                    id="create-readme",
+                    action=(
+                        f"Create {readme_path} inside {directory} containing "
+                        f"exactly the text {readme_content}."
+                    ),
+                    expectations=(
+                        FileExpectation(
+                            path=readme_path,
+                            exists=True,
+                            contains=readme_content,
+                        ),
+                    ),
+                    depends_on=("create-workspace",),
+                ),
+                PlanStep(
+                    id="create-config",
+                    action=(
+                        f"Create {config_path} inside {directory} containing "
+                        f"exactly the text {config_content}."
+                    ),
+                    expectations=(
+                        FileExpectation(
+                            path=config_path,
+                            exists=True,
+                            contains=config_content,
+                        ),
+                    ),
+                    depends_on=("create-workspace",),
+                ),
+            ),
+        )
 
 
 class DeterministicPlanner(Planner):
@@ -276,3 +426,35 @@ def validate_plan(plan: Plan) -> None:
                 raise ValueError(
                     f"step {step.id!r} depends on later step {dependency!r}"
                 )
+
+
+class FirstMatchPlanner(Planner):
+    """Delegate to the first planner that recognizes a goal's syntax.
+
+    Fall-through happens on :class:`UnrecognizedTaskError` only.  A planner that
+    recognizes the syntax but rejects the goal — an unsafe path, an empty
+    required value — raises the base :class:`UnsupportedTaskError`, which is
+    deliberately not caught here so that such a goal can never be silently
+    retried against a different planner.
+    """
+
+    def __init__(self, *planners: Planner) -> None:
+        self._planners = planners
+
+    @property
+    def planners(self) -> tuple[Planner, ...]:
+        """Delegates in fall-through order."""
+        return self._planners
+
+    def plan(self, goal: Goal) -> Plan:
+        for planner in self._planners:
+            try:
+                return planner.plan(goal)
+            except UnrecognizedTaskError:
+                continue
+        raise UnsupportedTaskError(
+            "Unsupported task. Supported syntax: "
+            "Create a file named <filename> containing <content>; or "
+            "set up a project workspace <dir> with a readme containing "
+            "<readme> and a config file containing <config>"
+        )
