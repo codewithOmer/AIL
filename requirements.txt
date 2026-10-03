@@ -13,7 +13,7 @@
 # D. Required by a local/external repository dependency
 #      pydantic       - required by the sibling `personal-ai` repo's
 #                       `personalai_contracts` package, which AIL imports at
-#                       runtime through integrations/personalai/memory.py.
+#                       runtime through memory/storage/personalai.py.
 #                       Matches that package's own constraint (>=2.7).
 #
 # NOT listed here on purpose:

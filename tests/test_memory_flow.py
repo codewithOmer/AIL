@@ -23,7 +23,7 @@ from memory.flow import (  # noqa: E402
     store_if_new,
 )
 from interfaces.memory import Memory  # noqa: E402
-from integrations.personalai.memory import PersonalAIMemoryStore  # noqa: E402
+from memory.storage.personalai import PersonalAIMemoryStore  # noqa: E402
 
 
 class _Mem(Memory):

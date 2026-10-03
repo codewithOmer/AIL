@@ -13,7 +13,7 @@ from core.plan_runner import PlanRunner
 from core.planner import DeterministicFileReplanner, SupportedFileTaskPlanner
 from integrations.open_interpreter.client import OpenInterpreterClient
 from integrations.open_interpreter.config import OIConfig
-from integrations.personalai.memory import PersonalAIMemoryStore
+from memory.storage.personalai import PersonalAIMemoryStore
 from interfaces.image import LocalImage
 from interfaces.intent import IntentKind, IntentRouter
 from interfaces.memory import Memory, MemoryStore

@@ -5,7 +5,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
-from integrations.personalai.memory import PersonalAIMemoryStore
+from memory.storage.personalai import PersonalAIMemoryStore
 
 class TestMemoryPersistence(unittest.TestCase):
     def setUp(self):

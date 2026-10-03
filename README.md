@@ -28,7 +28,7 @@ pass or fail from that evidence alone.
 | **Execution** | Implemented. Steps run in order, gated on dependency success, fail-fast. | `core/plan_runner.py`, `core/actions.py` |
 | **Verification** | Implemented. Filesystem existence + content checks, independent of the executor. | `tools/fs_verifier.py` |
 | **Recovery** | Implemented. Bounded retry loop; the strategy only rewrites the next message, never invents commands. | `core/recovery.py` |
-| **Memory** | Implemented. Recall relevant memories before each turn; store a small set of explicit user facts after. JSON-persisted so it survives restarts. | `memory/`, `integrations/personalai/memory.py` |
+| **Memory** | Implemented. Recall relevant memories before each turn; store a small set of explicit user facts after. JSON-persisted so it survives restarts. | `memory/`, `memory/storage/personalai.py` |
 | **Intent routing** | Implemented. Classifies a message as a memory write or a task. | `core/intent_router.py` |
 | **Voice** | Implemented. One fixed-window turn: microphone → Whisper STT → AIL → Edge TTS → speaker. | `voice/service.py`, `voice/audio/`, `voice/stt/`, `voice/tts/` |
 | **Image input** | Partial. A validated local image path can be passed to the executor. There is **no** image understanding, analysis, or model-based captioning. | `interfaces/image.py` |
@@ -155,7 +155,7 @@ python -m unittest \
 
 ## External dependencies
 
-**Sibling `personal-ai` repository.** `integrations/personalai/memory.py`
+**Sibling `personal-ai` repository.** `memory/storage/personalai.py`
 imports `personalai_contracts` from a sibling checkout at
 `../personal-ai/contracts/src`, injecting it onto `sys.path` at import time.
 That path is currently hardcoded and there is no fallback. Consequences:

@@ -14,7 +14,7 @@ import warnings
 from pathlib import Path
 
 from interfaces.memory import Memory, MemoryStore  # noqa: E402
-from integrations.personalai.memory import PersonalAIMemoryStore  # noqa: E402
+from memory.storage.personalai import PersonalAIMemoryStore  # noqa: E402
 
 # Isolated temp dir so these tests never read/write the default
 # persistent memory file (data/memory.json).
