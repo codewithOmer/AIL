@@ -5,9 +5,13 @@ Covers deterministic plan creation and integrity validation.
 
 from __future__ import annotations
 
+import shutil
+import tempfile
 import unittest
+from pathlib import Path
 from typing import Any
 
+from core.actions import execute_and_verify  # noqa: E402
 from core.planner import (  # noqa: E402
     DeterministicMultiStepPlanner,
     DeterministicPlanner,
@@ -15,7 +19,9 @@ from core.planner import (  # noqa: E402
     SupportedFileTaskPlanner,
     validate_plan,
 )
+from core.verification import FilesystemVerifier  # noqa: E402
 from interfaces.planning import Goal, Plan, PlanStep  # noqa: E402
+from interfaces.verification import FileExpectation  # noqa: E402
 
 
 class TestPlanning(unittest.TestCase):
@@ -269,6 +275,100 @@ class TestGoalAwarePlanner(unittest.TestCase):
         self.assertIs(plan.goal, goal)
         self.assertEqual(plan.steps, (PlanStep(id="step-1", action=goal.description),))
         validate_plan(plan)
+
+
+class TestProductionPlannerExpectationContract(unittest.TestCase):
+    """The production planner's expectations must be consumable by the real verifier.
+
+    ``SupportedFileTaskPlanner`` is the planner ``AILApplication.create`` wires by
+    default.  Its ``PlanStep.expectations`` are opaque at the planning-contract
+    level, so nothing in ``interfaces.planning`` guarantees the concrete verifier
+    can read them.  These tests drive the real ``FilesystemVerifier`` over a real
+    filesystem so that a future planner returning an expectation shape the
+    verifier cannot consume fails here instead of at runtime.
+
+    This deliberately does not cover ``DeterministicMultiStepPlanner`` or
+    ``GoalAwarePlanner``: they are shape-only test fixtures whose string
+    expectations the filesystem verifier is not built to consume.
+    """
+
+    def setUp(self) -> None:
+        self.temp_dir = Path(tempfile.mkdtemp())
+        self.verifier = FilesystemVerifier()
+        self.planner = SupportedFileTaskPlanner()
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def expectations_for(self, filename: str, content: str) -> tuple:
+        plan = self.planner.plan(
+            Goal(f"Create a file named {filename} containing {content}")
+        )
+        self.assertEqual(len(plan.steps), 1)
+        return plan.steps[0].expectations
+
+    def test_production_expectations_are_consumed_by_the_real_verifier(self) -> None:
+        expectations = self.expectations_for("contract.txt", "expected text")
+        self.assertEqual(len(expectations), 1)
+        self.assertIsInstance(expectations[0], FileExpectation)
+
+        (self.temp_dir / "contract.txt").write_text("expected text")
+
+        result = self.verifier.verify(expectations, self.temp_dir)
+
+        self.assertTrue(result.passed, result.reason)
+        self.assertEqual(len(result.checks), 1)
+        self.assertTrue(result.checks[0].passed)
+
+    def test_production_expectations_fail_when_state_is_absent(self) -> None:
+        expectations = self.expectations_for("absent.txt", "expected text")
+
+        result = self.verifier.verify(expectations, self.temp_dir)
+
+        self.assertFalse(result.passed)
+        self.assertEqual(len(result.checks), 1)
+        self.assertFalse(result.checks[0].passed)
+
+    def test_production_expectations_detect_wrong_content(self) -> None:
+        expectations = self.expectations_for("wrong.txt", "expected text")
+        (self.temp_dir / "wrong.txt").write_text("something else")
+
+        result = self.verifier.verify(expectations, self.temp_dir)
+
+        self.assertFalse(result.passed)
+        self.assertFalse(result.checks[0].passed)
+
+    def test_production_expectations_detect_missing_trailing_content(self) -> None:
+        expectations = self.expectations_for("partial.txt", "expected text")
+        (self.temp_dir / "partial.txt").write_text("expected")
+
+        result = self.verifier.verify(expectations, self.temp_dir)
+
+        self.assertFalse(result.passed)
+        self.assertFalse(result.checks[0].passed)
+
+    def test_full_planned_expectations_round_trip_through_execute_and_verify(
+        self,
+    ) -> None:
+        """The whole production seam: plan -> executor -> verify, same objects."""
+
+        class WritingClient:
+            def send_message(self, message, thread_id=None, timeout=None):
+                (self.temp_dir / "seam.txt").write_text("seam content")
+                return "executor text is never trusted"
+
+        client = WritingClient()
+        expectations = self.expectations_for("seam.txt", "seam content")
+
+        _, result = execute_and_verify(
+            client,
+            self.verifier,
+            "ignored action",
+            expectations,
+            base_dir=str(self.temp_dir),
+        )
+
+        self.assertTrue(result.passed, result.reason)
 
 
 if __name__ == "__main__":

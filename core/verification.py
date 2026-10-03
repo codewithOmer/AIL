@@ -7,20 +7,18 @@ an executor response, and never modifies, creates or deletes files.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from interfaces.verification import CheckResult, VerificationResult, Verifier
-
-
-@dataclass(frozen=True)
-class FileExpectation:
-    """Expected filesystem state, relative to the verification base directory."""
-
-    path: str | Path
-    exists: bool = True
-    contains: str | None = None
+# ``FileExpectation`` is re-exported here for compatibility: it is contract
+# data owned by ``interfaces.verification``, but it has always been importable
+# from this module and callers rely on that.
+from interfaces.verification import (
+    CheckResult,
+    FileExpectation,
+    VerificationResult,
+    Verifier,
+)
 
 
 class FilesystemVerifier(Verifier):

@@ -19,7 +19,7 @@ from interfaces.planning import (
     Replanner,
     StepStatus,
 )
-from core.verification import FileExpectation
+from interfaces.verification import FileExpectation
 
 
 class UnsupportedTaskError(ValueError):

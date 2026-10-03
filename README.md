@@ -26,7 +26,7 @@ pass or fail from that evidence alone.
 |---|---|---|
 | **Planning** | Implemented. Deterministic planner for one supported task shape (create a file in the workspace), plus plan validation (dependency/cycle checks) and one corrective replan. | `core/planner.py` |
 | **Execution** | Implemented. Steps run in order, gated on dependency success, fail-fast. | `core/plan_runner.py`, `core/actions.py` |
-| **Verification** | Implemented. Filesystem existence + content checks, independent of the executor. | `tools/fs_verifier.py` |
+| **Verification** | Implemented. Filesystem existence + content checks, independent of the executor. | `core/verification.py` |
 | **Recovery** | Implemented. Bounded retry loop; the strategy only rewrites the next message, never invents commands. | `core/recovery.py` |
 | **Memory** | Implemented. Recall relevant memories before each turn; store a small set of explicit user facts after. JSON-persisted so it survives restarts. | `memory/`, `memory/storage/personalai.py` |
 | **Intent routing** | Implemented. Classifies a message as a memory write or a task. | `core/intent_router.py` |
@@ -55,8 +55,10 @@ in the workspace. Any other goal raises `UnsupportedTaskError`.
 
 Early, pre-1.0, single-developer. The plan → execute → verify → recover loop,
 memory, voice, and the Open Interpreter adapter are working and unit-tested.
-The planner is deliberately narrow. The repository layout has not yet been
-organised by feature; that work is planned but not started.
+The planner is deliberately narrow. The repository layout is being organised by
+feature: contracts now live in `interfaces/`, and the memory, voice and
+verification workspaces have already been moved out of their original
+locations.
 
 ## Requirements
 

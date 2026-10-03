@@ -1,8 +1,11 @@
 """AIL action composition: execute through Open Interpreter, then verify.
 
 Deliberately thin.  Open Interpreter is only the executor; verification is
-AIL-owned and completely independent of the executor's output.  Recovery is
-not implemented yet.
+AIL-owned and completely independent of the executor's output.
+
+Recovery is deliberately not handled here.  A single ``execute_and_verify``
+call is one attempt; the bounded execute → verify → recover loop lives in
+``core.recovery.execute_with_recovery``, which this module sits underneath.
 """
 
 from __future__ import annotations

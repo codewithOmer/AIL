@@ -3,13 +3,28 @@
 ``Verifier`` implementations independently confirm that an executed action
 produced the expected state.  They must inspect the real filesystem directly
 and must never delegate to — or trust — the executor that performed the action.
+
+``FileExpectation`` lives here, not in a concrete verifier, because it is the
+shared vocabulary between the layers that *declare* expected state (planners)
+and the layers that *check* it (verifiers).  It is pure, behaviour-free data so
+that a planner can emit it without depending on any verifier implementation.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+
+
+@dataclass(frozen=True)
+class FileExpectation:
+    """Expected filesystem state, relative to the verification base directory."""
+
+    path: str | Path
+    exists: bool = True
+    contains: str | None = None
 
 
 @dataclass(frozen=True)

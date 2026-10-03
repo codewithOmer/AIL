@@ -1,9 +1,14 @@
 """AIL-owned planning contract.
 
 A ``Plan`` is a static, ordered description of intended work that sits BEFORE
-execution.  Planning never executes anything, never verifies anything and is
-completely executor-agnostic: the planner treats ``PlanStep.expectations`` as
-opaque data and imports no executor, verifier, recovery or action modules.
+execution.  Planning never executes anything and never verifies anything.
+
+The plan *structure* is executor-agnostic: this module defines no expectation
+type and ``PlanStep.expectations`` stays opaque ``Any`` data, so the planning
+layer imports no executor, verifier, recovery or action implementation.
+Concrete planners are free to emit expectation types owned by the interface
+layer — for example ``interfaces.verification.FileExpectation`` — and it is the
+concrete verifier's responsibility to consume them.
 """
 
 from __future__ import annotations
