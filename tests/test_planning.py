@@ -353,11 +353,16 @@ class TestProductionPlannerExpectationContract(unittest.TestCase):
         """The whole production seam: plan -> executor -> verify, same objects."""
 
         class WritingClient:
+            """Writes the expected file into the test's temp workspace."""
+
+            def __init__(self, temp_dir: Path) -> None:
+                self.temp_dir = temp_dir
+
             def send_message(self, message, thread_id=None, timeout=None):
                 (self.temp_dir / "seam.txt").write_text("seam content")
                 return "executor text is never trusted"
 
-        client = WritingClient()
+        client = WritingClient(self.temp_dir)
         expectations = self.expectations_for("seam.txt", "seam content")
 
         _, result = execute_and_verify(
