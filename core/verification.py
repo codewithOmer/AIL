@@ -3,6 +3,13 @@
 AIL-owned, executor-independent check that inspects the filesystem directly
 with pathlib.  It never shells out, never calls Open Interpreter, never parses
 an executor response, and never modifies, creates or deletes files.
+
+Containment (Milestone 2F.2): every expectation path is resolved and must
+remain inside the resolved base directory.  The verifier enforces this
+independently, so a planner or executor that supplies an unsafe expectation
+cannot make it read, stat, or assert anything outside the configured
+workspace.  Containment is decided with component-aware path comparison, not
+string prefixes.
 """
 
 from __future__ import annotations
@@ -25,6 +32,8 @@ class FilesystemVerifier(Verifier):
     """Verify file existence and text-content expectations."""
 
     def verify(self, expectations: Any, base_dir: Any) -> VerificationResult:
+        # The base is kept unresolved for reporting compatibility; containment
+        # itself always compares resolved Path objects.
         base = Path(base_dir)
         results = [self._check(base, exp) for exp in expectations]
         passed = all(r.passed for r in results)
@@ -43,7 +52,36 @@ class FilesystemVerifier(Verifier):
         )
 
     def _check(self, base: Path, exp: FileExpectation) -> CheckResult:
-        target = base / exp.path
+        candidate = base / exp.path
+        try:
+            resolved_base = base.resolve()
+            resolved_target = candidate.resolve()
+        except (OSError, ValueError) as exc:
+            # Unresolvable base or expectation path is a failed check, never a
+            # silent pass and never a crash that escapes verification.
+            return CheckResult(
+                name=str(candidate),
+                passed=False,
+                expected=f"exists={exp.exists}",
+                actual="path resolution error",
+                error=str(exc),
+            )
+
+        # Security boundary: the resolved expectation target must stay inside
+        # the resolved base.  Component-aware comparison, so sibling-prefix
+        # paths such as base-evil are correctly rejected.  Checked before any
+        # stat or read so an unsafe expectation never touches the filesystem
+        # outside the workspace.
+        if not resolved_target.is_relative_to(resolved_base):
+            return CheckResult(
+                name=str(candidate),
+                passed=False,
+                expected="Path inside workspace",
+                actual="Path escape attempt",
+                error="Security violation: path outside workspace",
+            )
+
+        target = resolved_target
         try:
             target.stat()
             actual_exists = True

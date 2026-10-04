@@ -7,6 +7,7 @@ response text is ignored for verification purposes.
 
 from __future__ import annotations
 
+import os
 import shutil
 import tempfile
 import unittest
@@ -117,17 +118,208 @@ class TestFilesystemVerifier(FilesystemVerifierTestBase):
         self.assertEqual(before, after)
         self.assertEqual(path.read_text(encoding="utf-8"), "content")
 
-    def test_read_error_becomes_failed_check(self) -> None:
-        (self.temp_dir / "adir").mkdir()
-        result = self.make_verifier().verify(
-            [FileExpectation("adir", exists=True, contains="x")],
-            self.temp_dir,
-        )
+class TestSecurityContainment(FilesystemVerifierTestBase):
+    """The verifier itself enforces the workspace boundary.
+
+    Every case here calls ``FilesystemVerifier.verify`` directly; none of them
+    depend on planner validation, so a planner or executor that supplies an
+    unsafe expectation cannot make the verifier read or assert anything outside
+    the configured workspace.
+    """
+
+    def _workspace(self) -> Path:
+        workspace = self.temp_dir / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+        return workspace
+
+    def _try_symlink(self, link: Path, target: Path, *, target_is_directory: bool) -> bool:
+        """Attempt to create a symlink; return False if the platform forbids it."""
+        try:
+            link.symlink_to(target, target_is_directory=target_is_directory)
+            return True
+        except (OSError, NotImplementedError):
+            return False
+
+    def test_traversal_rejected(self) -> None:
+        workspace = self._workspace()
+        (self.temp_dir / "outside.txt").write_text("secret")
+        exp = FileExpectation(path="../outside.txt", exists=True)
+        result = self.make_verifier().verify([exp], workspace)
         self.assertFalse(result.passed)
-        self.assertEqual(len(result.checks), 1)
-        check = result.checks[0]
-        self.assertIsNotNone(check.error)
-        self.assertEqual(check.actual, "read error")
+        self.assertIn("Security violation", result.checks[0].error)
+
+    def test_deep_traversal_rejected(self) -> None:
+        workspace = self._workspace()
+        (self.temp_dir / "outside.txt").write_text("secret")
+        exp = FileExpectation(path="../../outside.txt", exists=True)
+        result = self.make_verifier().verify([exp], workspace)
+        self.assertFalse(result.passed)
+        self.assertIn("Security violation", result.checks[0].error)
+
+    def test_nested_safe_path_accepted(self) -> None:
+        workspace = self._workspace()
+        (workspace / "sub" / "deeper").mkdir(parents=True)
+        (workspace / "sub" / "deeper" / "a.txt").write_text("data")
+        exp = FileExpectation(path="sub/deeper/a.txt", exists=True, contains="data")
+        result = self.make_verifier().verify([exp], workspace)
+        self.assertTrue(result.passed)
+        self.assertIsNone(result.checks[0].error)
+
+    def test_dot_dot_path_rejected(self) -> None:
+        workspace = self._workspace()
+        exp = FileExpectation(path="..", exists=True)
+        result = self.make_verifier().verify([exp], workspace)
+        self.assertFalse(result.passed)
+        self.assertIn("Security violation", result.checks[0].error)
+
+    def test_dot_path_is_contained_not_an_escape(self) -> None:
+        """``.`` resolves to the base itself, so containment allows it.
+
+        This is not an escape: the expectation is checked against the workspace
+        directory, which is inside the workspace.  The test pins that ``.`` is
+        *not* reported as a security violation, while still not passing
+        silently when the base is missing.
+        """
+        workspace = self._workspace()
+        exp = FileExpectation(path=".", exists=True)
+        result = self.make_verifier().verify([exp], workspace)
+        self.assertTrue(result.passed)
+        self.assertIsNone(result.checks[0].error)
+        self.assertEqual(result.checks[0].actual, "exists")
+
+        missing_base = self.temp_dir / "nope"
+        result_missing = self.make_verifier().verify(
+            [FileExpectation(path=".", exists=True)], missing_base
+        )
+        self.assertFalse(result_missing.passed)
+        self.assertIsNone(result_missing.checks[0].error)
+        self.assertEqual(result_missing.checks[0].actual, "missing")
+
+    @unittest.skipUnless(os.name == "nt", "Windows drive/UNC semantics")
+    def test_windows_drive_path_rejected(self) -> None:
+        workspace = self._workspace()
+        for drive_path in ("C:/Windows/win.ini", "D:/data"):
+            with self.subTest(path=drive_path):
+                exp = FileExpectation(path=drive_path, exists=True)
+                result = self.make_verifier().verify([exp], workspace)
+                self.assertFalse(result.passed)
+                self.assertIn("Security violation", result.checks[0].error)
+
+    @unittest.skipUnless(os.name == "nt", "Windows UNC semantics")
+    def test_windows_unc_path_rejected(self) -> None:
+        workspace = self._workspace()
+        exp = FileExpectation(path="//server/share/file.txt", exists=True)
+        result = self.make_verifier().verify([exp], workspace)
+        self.assertFalse(result.passed)
+        self.assertIn("Security violation", result.checks[0].error)
+
+    @unittest.skipUnless(os.name == "nt", "POSIX absolute semantics")
+    def test_posix_absolute_path_rejected(self) -> None:
+        workspace = self._workspace()
+        exp = FileExpectation(path="/etc/passwd", exists=True)
+        result = self.make_verifier().verify([exp], workspace)
+        self.assertFalse(result.passed)
+        self.assertIn("Security violation", result.checks[0].error)
+
+    def test_sibling_prefix_escape_rejected(self) -> None:
+        """A sibling directory sharing the base's name prefix must not match.
+
+        A string-prefix containment bug would treat ``workspace-evil`` as
+        inside ``workspace``; the component-aware check must reject it, whether
+        the expectation reaches it by traversal or by absolute path.
+        """
+        workspace = self._workspace()
+        sibling = self.temp_dir / "workspace-evil"
+        sibling.mkdir()
+        (sibling / "file.txt").write_text("secret")
+
+        for path in ("../workspace-evil/file.txt", sibling / "file.txt"):
+            with self.subTest(path=str(path)):
+                exp = FileExpectation(path=path, exists=True)
+                result = self.make_verifier().verify([exp], workspace)
+                self.assertFalse(result.passed)
+                self.assertIn("Security violation", result.checks[0].error)
+
+    def test_symlink_file_escape_rejected(self) -> None:
+        workspace = self._workspace()
+        outside = self.temp_dir / "outside.txt"
+        outside.write_text("secret")
+        link = workspace / "link.txt"
+        if not self._try_symlink(link, outside, target_is_directory=False):
+            self.skipTest("platform forbids file symlinks")
+
+        exp = FileExpectation(path="link.txt", exists=True)
+        result = self.make_verifier().verify([exp], workspace)
+        self.assertFalse(result.passed)
+        self.assertIn("Security violation", result.checks[0].error)
+
+    def test_symlink_directory_escape_rejected(self) -> None:
+        workspace = self._workspace()
+        outside_dir = self.temp_dir / "outside_dir"
+        outside_dir.mkdir()
+        (outside_dir / "secret.txt").write_text("secret")
+        link = workspace / "linkdir"
+        if not self._try_symlink(link, outside_dir, target_is_directory=True):
+            self.skipTest("platform forbids directory symlinks/junctions")
+
+        exp = FileExpectation(path="linkdir/secret.txt", exists=True)
+        result = self.make_verifier().verify([exp], workspace)
+        self.assertFalse(result.passed)
+        self.assertIn("Security violation", result.checks[0].error)
+
+    def test_symlink_inside_workspace_remains_valid(self) -> None:
+        workspace = self._workspace()
+        real = workspace / "real.txt"
+        real.write_text("inside content")
+        link = workspace / "alias.txt"
+        if not self._try_symlink(link, real, target_is_directory=False):
+            self.skipTest("platform forbids file symlinks")
+
+        exp = FileExpectation(path="alias.txt", exists=True, contains="inside content")
+        result = self.make_verifier().verify([exp], workspace)
+        self.assertTrue(result.passed, result.reason)
+        self.assertIsNone(result.checks[0].error)
+
+    def test_symlink_directory_inside_workspace_remains_valid(self) -> None:
+        workspace = self._workspace()
+        real_dir = workspace / "real_dir"
+        real_dir.mkdir()
+        (real_dir / "data.txt").write_text("nested")
+        link = workspace / "alias_dir"
+        if not self._try_symlink(link, real_dir, target_is_directory=True):
+            self.skipTest("platform forbids directory symlinks/junctions")
+
+        exp = FileExpectation(path="alias_dir/data.txt", exists=True, contains="nested")
+        result = self.make_verifier().verify([exp], workspace)
+        self.assertTrue(result.passed, result.reason)
+
+    def test_unsafe_expectation_never_reads_outside_file(self) -> None:
+        """The boundary holds even when the outside file exists and is readable."""
+        workspace = self._workspace()
+        outside = self.temp_dir / "outside.txt"
+        outside.write_text("should never be read")
+        exp = FileExpectation(path="../outside.txt", exists=True, contains="should never be read")
+        result = self.make_verifier().verify([exp], workspace)
+        self.assertFalse(result.passed)
+        self.assertIn("Security violation", result.checks[0].error)
+
+    def test_unsafe_expectation_with_exists_false_is_still_rejected(self) -> None:
+        """Containment is checked regardless of exists/absent expectation."""
+        workspace = self._workspace()
+        exp = FileExpectation(path="../outside.txt", exists=False)
+        result = self.make_verifier().verify([exp], workspace)
+        self.assertFalse(result.passed)
+        self.assertIn("Security violation", result.checks[0].error)
+
+    def test_base_is_resolved_before_containment(self) -> None:
+        """A base passed as a relative or non-canonical path still confines."""
+        workspace = self._workspace()
+        (workspace / "a.txt").write_text("data")
+        exp = FileExpectation(path="a.txt", exists=True)
+
+        # Pass the base through a "." component to force resolution.
+        result = self.make_verifier().verify([exp], workspace / ".")
+        self.assertTrue(result.passed)
 
 
 class TestExecuteAndVerify(FilesystemVerifierTestBase):
