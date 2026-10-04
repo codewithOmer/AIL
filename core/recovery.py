@@ -21,6 +21,17 @@ def _attempt_noun(count: int) -> str:
     return "attempt" if count == 1 else "attempts"
 
 
+def _display_name(name: str) -> str:
+    """Return a safe display label for a failed check.
+
+    ``CheckResult.name`` is the absolute path the verifier examined.  Handing
+    that to the executor leaks the internal filesystem layout, so only the
+    final path component (the file/directory the check is actually about) is
+    shown, stripped of any parent directories above it.
+    """
+    return name.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+
+
 class DefaultRetry(RecoveryStrategy):
     """Conservative default strategy.
 
@@ -36,7 +47,7 @@ class DefaultRetry(RecoveryStrategy):
             return None
         failed = [c for c in result.checks if not c.passed]
         details = "; ".join(
-            f"{c.name} (expected {c.expected}, got {c.actual})"
+            f"{_display_name(c.name)} (expected {c.expected}, got {c.actual})"
             for c in failed
         )
         return (

@@ -62,9 +62,13 @@ class ScriptedClient:
 class ExplodingClient:
     """Raises immediately, simulating an executor crash."""
 
+    def __init__(self) -> None:
+        self.calls = 0
+
     def send_message(
         self, message: str, thread_id: str | None = None, timeout: float | None = None
     ) -> str:
+        self.calls += 1
         raise RuntimeError("executor exploded")
 
 
@@ -206,15 +210,33 @@ class TestPlanRunnerBasics(PlanRunnerTestBase):
             self.assertIsNone(skipped.error)
 
     def test_executor_exception_becomes_failed_with_error(self) -> None:
-        report = self.run_steps(
-            ExplodingClient(),
-            (self.step("1", "a.txt", TEXT_A),),
-        )
+        client = ExplodingClient()
+        report = self.run_steps(client, (self.step("1", "a.txt", TEXT_A),))
         self.assertFalse(report.passed)
         self.assertEqual(report.steps[0].status, StepStatus.FAILED)
         self.assertIsNotNone(report.steps[0].error)
         self.assertIn("executor exploded", report.steps[0].error)
         self.assertIsNone(report.steps[0].recovery)
+
+    def test_executor_exception_is_not_retried(self) -> None:
+        """An executor crash ends the step immediately.
+
+        Recovery retries a *verification* failure only.  A crashing executor
+        must consume exactly one call even though the default attempt budget is
+        two, and must yield a clear failure result instead of a retry.
+        """
+        client = ExplodingClient()
+
+        report = self.runner(client).run_plan(
+            Plan(goal=Goal("initial"), steps=(self.step("1", "a.txt", TEXT_A),))
+        )
+
+        self.assertFalse(report.passed)
+        self.assertEqual(client.calls, 1)
+        self.assertEqual(len(report.attempts), 1)
+        self.assertEqual(report.steps[0].status, StepStatus.FAILED)
+        self.assertIsNone(report.steps[0].recovery)
+        self.assertIn("executor exploded", report.steps[0].error)
 
 
 class TestPlanRunnerDependencies(PlanRunnerTestBase):
@@ -507,6 +529,27 @@ class TestPlanRunnerReplanning(PlanRunnerTestBase):
         self.assertEqual(len(replanner.calls), 1)
         self.assertEqual(len(report.attempts), 2)
         self.assertFalse(report.attempts[1].passed)
+
+    def test_executor_crash_replan_is_bounded_to_one_replacement(self) -> None:
+        """A replacement entered via an executor crash is still bounded.
+
+        ``PlanRunner`` hands any failing report to the replanner once.  A
+        replanner that keeps returning a failing replacement must be consulted
+        exactly once, and each plan costs exactly one executor call because a
+        crash is never retried.
+        """
+        client = ExplodingClient()
+        replanner = FixedReplanner(self.replacement_plan())
+
+        report = self.runner(client, replanner=replanner).run_plan(
+            Plan(goal=Goal("initial"), steps=(self.step("initial", "a.txt", TEXT_A),))
+        )
+
+        self.assertFalse(report.passed)
+        self.assertEqual(len(replanner.calls), 1)
+        self.assertEqual(len(report.attempts), 2)
+        self.assertFalse(report.attempts[1].passed)
+        self.assertEqual(client.calls, 2)  # one per plan, never retried
 
     def test_step_recovery_finishes_before_replanning(self) -> None:
         client = ScriptedClient(
