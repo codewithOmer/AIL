@@ -10,6 +10,10 @@ from unittest.mock import patch
 from pathlib import Path
 
 from core.application import AILApplication  # noqa: E402
+from core.inspection import (  # noqa: E402
+    INSPECTION_HEADER,
+    WorkspaceInspector,
+)
 from core.planner import (  # noqa: E402
     DeterministicFileReplanner,
     FirstMatchPlanner,
@@ -515,6 +519,107 @@ class TestProductionWorkspacePlanner(unittest.TestCase):
             application.agent.plan_runner.replanner.__class__.__name__,
             "DeterministicFileReplanner",
         )
+
+
+class TestProductionInspectionWiring(unittest.TestCase):
+    """The production composition wires a real workspace inspector."""
+
+    _WORKSPACE_GOAL = (
+        "Set up a project workspace src with a readme containing hello world "
+        "and a config file containing {}"
+    )
+    _FILE_GOAL = (
+        "Create a file named hello.txt containing remember that I like coffee"
+    )
+
+    def setUp(self) -> None:
+        self.temp_dir = Path(tempfile.mkdtemp())
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def make_application(self, client=None, **kwargs):
+        events: list[str] = []
+        application = AILApplication.create(
+            base_dir=self.temp_dir,
+            memory_store=RecordingMemoryStore(events),
+            client=client or WritingClient(self.temp_dir, events),
+            start_client=False,
+            **kwargs,
+        )
+        return application, events
+
+    def test_production_application_wires_a_workspace_inspector(self) -> None:
+        application, _ = self.make_application()
+
+        inspector = application.agent.inspector
+
+        self.assertIsInstance(inspector, WorkspaceInspector)
+
+    def test_configured_base_dir_reaches_the_inspector(self) -> None:
+        application, _ = self.make_application()
+
+        inspector = application.agent.inspector
+
+        self.assertEqual(inspector.base_dir, self.temp_dir.resolve())
+        self.assertEqual(
+            inspector.base_dir,
+            Path(application.agent.plan_runner.base_dir).resolve(),
+        )
+
+    def test_injected_inspector_is_used_instead_of_the_default(self) -> None:
+        other = Path(tempfile.mkdtemp())
+        try:
+            (other / "custom.txt").write_text("x")
+            injected = WorkspaceInspector(other)
+
+            application, _ = self.make_application(inspector=injected)
+
+            self.assertIs(application.agent.inspector, injected)
+        finally:
+            shutil.rmtree(other, ignore_errors=True)
+
+    def test_existing_file_task_planning_still_works(self) -> None:
+        application, _ = self.make_application()
+
+        report = application.run(self._FILE_GOAL)
+
+        self.assertTrue(report.passed)
+        self.assertEqual(report.goal.description, self._FILE_GOAL)
+        self.assertTrue((self.temp_dir / "hello.txt").is_file())
+
+    def test_workspace_setup_still_produces_the_same_three_step_plan(self) -> None:
+        events: list[str] = []
+        application, _ = self.make_application(
+            client=WorkspaceWritingClient(self.temp_dir, events)
+        )
+
+        report = application.run(self._WORKSPACE_GOAL)
+
+        self.assertTrue(report.passed)
+        self.assertEqual(
+            [step.step_id for step in report.steps],
+            ["create-workspace", "create-readme", "create-config"],
+        )
+        self.assertTrue((self.temp_dir / "src" / "README.md").is_file())
+        self.assertTrue((self.temp_dir / "src" / "config.json").is_file())
+
+    def test_inspection_context_does_not_change_the_reported_goal(self) -> None:
+        (self.temp_dir / "existing.txt").write_text("already here")
+        application, _ = self.make_application()
+
+        report = application.run(self._FILE_GOAL)
+
+        # The inspection block is prepended and the user goal still ends the
+        # planner-visible description unchanged.
+        description = report.goal.description
+        self.assertTrue(description.startswith(INSPECTION_HEADER))
+        self.assertIn("existing.txt", description)
+        self.assertTrue(description.endswith(self._FILE_GOAL))
+        self.assertEqual(
+            report.attempts[0].plan.goal.description, description
+        )
+        self.assertTrue(report.passed)
 
 
 if __name__ == "__main__":

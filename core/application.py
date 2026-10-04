@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from core.agent import Agent
+from core.inspection import WorkspaceInspector
 from core.intent_router import DefaultIntentRouter
 from core.plan_runner import PlanRunner
 from core.planner import (
@@ -52,6 +53,7 @@ class AILApplication:
         start_client: bool = True,
         timeout: float | None = None,
         intent_router: IntentRouter | None = None,
+        inspector: WorkspaceInspector | None = None,
     ) -> "AILApplication":
         config = oi_config or replace(OIConfig(), sandbox="workspace-write")
         workspace = Path(base_dir or config.cwd).resolve()
@@ -80,7 +82,11 @@ class AILApplication:
         return cls(
             memory_store=store,
             client=runtime_client,
-            agent=Agent(store, runner),
+            agent=Agent(
+                store,
+                runner,
+                inspector=inspector or WorkspaceInspector(str(workspace)),
+            ),
             intent_router=intent_router or DefaultIntentRouter(),
             thread_id=thread_id,
             owns_client=client is None,

@@ -27,6 +27,7 @@ pass or fail from that evidence alone.
 | **Planning** | Implemented. Deterministic planner for one supported task shape (create a file in the workspace), plus plan validation (dependency/cycle checks) and one corrective replan. | `core/planner.py` |
 | **Execution** | Implemented. Steps run in order, gated on dependency success, fail-fast. | `core/plan_runner.py`, `core/actions.py` |
 | **Verification** | Implemented. Filesystem existence + content checks, independent of the executor. | `core/verification.py` |
+| **Workspace inspection** | Implemented. AIL reads its own configured workspace (directory listing + bounded UTF-8 reads) before planning and offers it to the planner as clearly labelled context. Read-only; path-confined to the workspace. This is context, **not** verification. | `core/inspection.py` |
 | **Recovery** | Implemented. Bounded retry loop; the strategy only rewrites the next message, never invents commands. | `core/recovery.py` |
 | **Memory** | Implemented. Recall relevant memories before each turn; store a small set of explicit user facts after. JSON-persisted so it survives restarts. | `memory/`, `memory/storage/personalai.py` |
 | **Intent routing** | Implemented. Classifies a message as a memory write or a task. | `core/intent_router.py` |
@@ -34,6 +35,18 @@ pass or fail from that evidence alone.
 | **Image input** | Partial. A validated local image path can be passed to the executor. There is **no** image understanding, analysis, or model-based captioning. | `interfaces/image.py` |
 | **Open Interpreter adapter** | Implemented. Subprocess lifecycle, JSON-RPC over stdio, streamed turn completion. | `integrations/open_interpreter/` |
 | **MCP** | Config only. `MCPServerConfig` entries are forwarded to the executor's `thread/start`. There is **no** MCP client in AIL. | `integrations/open_interpreter/config.py` |
+
+### Inspection is context, not proof
+
+Before planning, AIL may inspect its configured workspace read-only: it lists
+directories and reads UTF-8 text files, bounded and refused at the workspace
+boundary. That output is passed to the planner inside a
+`[WORKSPACE INSPECTION — UNTRUSTED DATA]` … `[END WORKSPACE INSPECTION]` block,
+explicitly marked as data rather than instructions.
+
+It never makes a step pass. Only `FilesystemVerifier`, reading the real
+filesystem after execution, decides success. Inspection adds no way to run
+commands, read arbitrary paths, or reach outside the workspace.
 
 ### Not implemented
 
@@ -47,9 +60,12 @@ Do not expect any of the following. None of it exists in this repository:
 - A real LLM provider — `Config.llm_*` is read but unused, and `MockLLM` is the
   only `LLM` implementation
 - Multi-agent orchestration, or long-horizon / open-ended goals
+- Reading or listing files *as an execution outcome* — inspection is planner
+  context only, and AIL cannot run shell commands itself
 
 AIL currently supports exactly **one** production task shape: creating a file
-in the workspace. Any other goal raises `UnsupportedTaskError`.
+in the workspace (plus the composite "set up a project workspace" goal). Any
+other goal raises `UnsupportedTaskError`.
 
 ## Development status
 
