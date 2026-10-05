@@ -21,12 +21,31 @@ independently of whatever planner or executor supplied the expectations.  This
 is the same "enforce it where it is used, not where it is called" boundary as
 2F.2 containment: only the real filesystem check is trusted, and only a check
 that actually ran may contribute to the verdict.
+
+Bounded reads (Milestone 2F.4): a ``contains`` expectation is decided by
+reading the target, and the workspace is untrusted, so those reads are bounded
+by :data:`MAX_VERIFY_READ_BYTES`.  A target larger than the bound is refused
+*without being read* and fails closed: an oversized file can never produce a
+PASS, because the verifier will not claim a check it did not perform.  This is
+an availability/DoS guard against read amplification (an unbounded
+``read_text`` on a multi-gigabyte file would exhaust memory inside the very
+component every other guarantee depends on); it mirrors the bounded-read rule
+``core.inspection`` already applies to the same content.  The bound mirrors
+``WorkspaceInspector.read_text``'s default ``max_bytes`` so both AIL paths
+that read workspace content agree.  Workspace containment above remains the
+security boundary: this limit is about resource safety, not about deciding
+whether a path is allowed.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+
+# Upper bound on bytes read from one expectation target to decide a
+# ``contains`` check.  Matches ``WorkspaceInspector.read_text``'s default
+# ``max_bytes``; see the module docstring for why reads are bounded.
+MAX_VERIFY_READ_BYTES = 65536
 
 # ``FileExpectation`` is re-exported here for compatibility: it is contract
 # data owned by ``interfaces.verification``, but it has always been importable
@@ -193,6 +212,32 @@ class FilesystemVerifier(Verifier):
                 actual="missing",
             )
         if exp.contains is not None:
+            # Resource boundary (2F.4): decide ``contains`` from a bounded read.
+            # The target is re-stat'd for its size here, before any read, so an
+            # oversized target is never read into memory at all.  Failing closed
+            # is deliberate — the verifier must not PASS a file it declined to
+            # read, because it has no evidence about that file's contents.
+            try:
+                size = target.stat().st_size
+            except OSError as exc:
+                return CheckResult(
+                    name=str(target),
+                    passed=False,
+                    expected=f"contains {exp.contains!r}",
+                    actual="stat error",
+                    error=str(exc),
+                )
+            if size > MAX_VERIFY_READ_BYTES:
+                return CheckResult(
+                    name=str(target),
+                    passed=False,
+                    expected=f"contains {exp.contains!r}",
+                    actual=f"file too large to verify ({size} bytes)",
+                    error=(
+                        "Bounded verification: refusing to read "
+                        f"{size} bytes, limit is {MAX_VERIFY_READ_BYTES} bytes"
+                    ),
+                )
             try:
                 text = target.read_text(encoding="utf-8", errors="replace")
             except OSError as exc:

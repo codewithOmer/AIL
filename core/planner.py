@@ -66,10 +66,16 @@ def _is_safe_relative_path(path: str) -> bool:
 
     Unlike ``_is_safe_filename`` this permits safe relative subdirectories
     (``src/config/settings.json``) while still rejecting traversal, absolute
-    paths, drive letters and UNC shares.  This is a containment boundary, not a
-    convenience: ``FilesystemVerifier`` joins expectations onto its base
-    directory without confining the result, so planner-side validation is the
-    only thing keeping verification inside the workspace.
+    paths, drive letters and UNC shares.
+
+    This is a defence-in-depth convenience boundary, not the containment
+    boundary.  Since 2F.2 ``FilesystemVerifier`` resolves every expectation
+    path itself and refuses to stat or read anything outside its resolved base
+    directory, independently of what a planner supplied, so an unsafe path
+    cannot reach the filesystem even if it were accepted here.  Keeping the
+    planner-side check too means an unsafe goal is rejected with a clear
+    ``UnsupportedTaskError`` before any execution, rather than only at
+    verification time.
     """
     if not path or not path.strip():
         return False

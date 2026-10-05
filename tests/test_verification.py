@@ -15,7 +15,11 @@ from pathlib import Path
 
 from core.actions import execute_and_verify  # noqa: E402
 from interfaces.verification import VerificationResult  # noqa: E402
-from core.verification import FileExpectation, FilesystemVerifier  # noqa: E402
+from core.verification import (  # noqa: E402
+    MAX_VERIFY_READ_BYTES,
+    FileExpectation,
+    FilesystemVerifier,
+)
 
 
 class FakeClient:
@@ -361,6 +365,297 @@ class TestNonVacuousVerification(FilesystemVerifierTestBase):
         self.assertFalse(result.checks[1].passed)
         self.assertIn("1 of 2 checks failed", result.reason)
         self.assertIn(str(self.temp_dir / "b.txt"), result.reason)
+
+
+class TestBoundedVerificationReads(FilesystemVerifierTestBase):
+    """A ``contains`` check reads at most ``MAX_VERIFY_READ_BYTES`` (2F.4).
+
+    Workspace content is untrusted and the executor may write files of any
+    size, so the verifier must never pull an unbounded blob into memory to
+    decide one check.  A target larger than the bound is refused *without
+    being read* and fails closed: the verifier must not PASS a file it
+    declined to inspect, because it holds no evidence about that file.
+
+    Fixtures stay small and deliberately above the bound.  The oversized cases
+    always embed the expected needle, so a failure can only be attributed to
+    the bound and never to the string simply being absent.
+    """
+
+    def _write(self, name: str, payload: bytes) -> Path:
+        path = self.temp_dir / name
+        path.write_bytes(payload)
+        return path
+
+    def _payload_with(self, size: int, needle: str) -> bytes:
+        """Exactly *size* bytes that do contain *needle*."""
+        if size < len(needle):
+            raise ValueError("size must fit the needle")
+        return needle.encode("utf-8") + b"a" * (size - len(needle))
+
+    # --- A. existing valid behaviour is preserved ------------------------
+
+    def test_file_below_bound_with_matching_contains_passes(self) -> None:
+        self._write("small.txt", b"hello world and a little more")
+        result = self.make_verifier().verify(
+            [FileExpectation("small.txt", contains="hello world")],
+            self.temp_dir,
+        )
+        self.assertTrue(result.passed, result.reason)
+        self.assertEqual(result.reason, "All checks passed")
+        self.assertEqual(len(result.checks), 1)
+        self.assertTrue(result.checks[0].passed)
+        self.assertEqual(result.checks[0].actual, "contains")
+
+    def test_file_exactly_at_bound_with_matching_contains_passes(self) -> None:
+        """The refusal is ``size > bound``; exactly at the bound still reads."""
+        self._write(
+            "exact.bin",
+            self._payload_with(MAX_VERIFY_READ_BYTES, "NEEDLE"),
+        )
+        result = self.make_verifier().verify(
+            [FileExpectation("exact.bin", contains="NEEDLE")],
+            self.temp_dir,
+        )
+        self.assertTrue(result.passed, result.reason)
+        self.assertEqual(result.reason, "All checks passed")
+
+    def test_all_checks_passed_reason_is_unchanged(self) -> None:
+        self._write("a.txt", b"data")
+        result = self.make_verifier().verify(
+            [FileExpectation("a.txt", exists=True, contains="data")],
+            self.temp_dir,
+        )
+        self.assertTrue(result.passed)
+        self.assertEqual(result.reason, "All checks passed")
+
+    def test_bound_matches_the_inspection_precedent(self) -> None:
+        """The verifier bound mirrors ``WorkspaceInspector.read_text`` default."""
+        self.assertEqual(
+            MAX_VERIFY_READ_BYTES,
+            inspect_max_bytes_default(),
+        )
+        # Guard against the two defaults silently drifting apart.
+        self.assertEqual(MAX_VERIFY_READ_BYTES, 65536)
+
+    # --- B. oversized targets fail closed --------------------------------
+
+    def test_oversized_file_containing_needle_fails_closed(self) -> None:
+        """The needle is present, yet the file is still refused.
+
+        This is the case that distinguishes a bounded refusal from a plain
+        content miss: the expected text really is in the file, so the only
+        reason this cannot pass is the bound.
+        """
+        size = MAX_VERIFY_READ_BYTES + 1
+        self._write("big.bin", self._payload_with(size, "NEEDLE"))
+        result = self.make_verifier().verify(
+            [FileExpectation("big.bin", contains="NEEDLE")],
+            self.temp_dir,
+        )
+        self.assertFalse(result.passed)
+        self.assertEqual(len(result.checks), 1)
+        check = result.checks[0]
+        self.assertFalse(check.passed)
+        self.assertIn("too large", check.actual)
+        self.assertIn(str(size), check.actual)
+        self.assertNotIn("does not contain", check.actual)
+        self.assertIn("Bounded verification", check.error)
+
+    def test_oversized_file_without_needle_fails_closed(self) -> None:
+        size = MAX_VERIFY_READ_BYTES + 1
+        self._write("big.bin", b"a" * size)
+        result = self.make_verifier().verify(
+            [FileExpectation("big.bin", contains="NEEDLE")],
+            self.temp_dir,
+        )
+        self.assertFalse(result.passed)
+        self.assertIn("too large", result.checks[0].actual)
+
+    def test_comfortably_oversized_fixture_fails_closed(self) -> None:
+        """A clearly oversized file is refused, still without being read."""
+        size = 2 * MAX_VERIFY_READ_BYTES
+        self._write("big.bin", self._payload_with(size, "NEEDLE"))
+        result = self.make_verifier().verify(
+            [FileExpectation("big.bin", contains="NEEDLE")],
+            self.temp_dir,
+        )
+        self.assertFalse(result.passed)
+        self.assertIn("too large", result.checks[0].actual)
+
+    def test_oversized_failure_is_a_controlled_check_result(self) -> None:
+        """No exception escapes; the outcome is ordinary check data."""
+        self._write("big.bin", b"a" * (MAX_VERIFY_READ_BYTES + 1))
+        result = self.make_verifier().verify(
+            [FileExpectation("big.bin", contains="NEEDLE")],
+            self.temp_dir,
+        )
+        self.assertFalse(result.passed)
+        self.assertTrue(result.checks, "a CheckResult must be reported")
+        check = result.checks[0]
+        self.assertFalse(check.passed)
+        self.assertIsInstance(check.name, str)
+        self.assertIsInstance(check.expected, str)
+        self.assertIsInstance(check.actual, str)
+        self.assertIsInstance(check.error, str)
+
+    def test_oversized_verification_never_reports_pass(self) -> None:
+        """The verifier must never claim success for a file it would not read."""
+        for content in (self._payload_with(MAX_VERIFY_READ_BYTES + 1, "NEEDLE"), b"a" * (MAX_VERIFY_READ_BYTES + 1)):
+            with self.subTest(size=len(content)):
+                (self.temp_dir / "big.bin").write_bytes(content)
+                result = self.make_verifier().verify(
+                    [FileExpectation("big.bin", contains="NEEDLE")],
+                    self.temp_dir,
+                )
+                self.assertFalse(result.passed)
+                self.assertNotEqual(result.reason, "All checks passed")
+
+    def test_exists_only_expectation_is_not_implicated_by_the_bound(self) -> None:
+        """The bound applies to ``contains`` reads only; existence is unaffected."""
+        self._write("big.bin", b"a" * (MAX_VERIFY_READ_BYTES + 1))
+        result = self.make_verifier().verify(
+            [FileExpectation("big.bin", exists=True)],
+            self.temp_dir,
+        )
+        self.assertTrue(result.passed, result.reason)
+
+    # --- C/D. regression: 2F.2 containment and 2F.3 non-vacuity ----------
+
+    def test_containment_still_rejects_an_oversized_escape(self) -> None:
+        """A bound check must not weaken 2F.2 containment."""
+        workspace = self.temp_dir / "workspace"
+        workspace.mkdir()
+        outside = self.temp_dir / "outside.txt"
+        outside.write_bytes(b"a" * (MAX_VERIFY_READ_BYTES + 1))
+        result = self.make_verifier().verify(
+            [FileExpectation("../outside.txt", contains="a")],
+            workspace,
+        )
+        self.assertFalse(result.passed)
+        self.assertIn("Security violation", result.checks[0].error)
+
+    def test_non_vacuity_still_enforced_with_oversized_expectations(self) -> None:
+        """2F.3 rules hold unchanged when the bound is in play."""
+        self._write("big.bin", b"a" * (MAX_VERIFY_READ_BYTES + 1))
+        self._write("ok.txt", b"fine")
+        result = self.make_verifier().verify(
+            [FileExpectation("ok.txt", contains="fine")],
+            self.temp_dir,
+        )
+        self.assertTrue(result.passed, result.reason)
+
+        empty = self.make_verifier().verify([], self.temp_dir)
+        self.assertFalse(empty.passed)
+        self.assertEqual(empty.checks, ())
+
+        none = self.make_verifier().verify(None, self.temp_dir)
+        self.assertFalse(none.passed)
+        self.assertEqual(len(none.checks), 1)
+
+    def test_mixed_sizes_aggregate_with_oversized_items(self) -> None:
+        """An oversized item fails its own check; later items still run."""
+        self._write("big.bin", self._payload_with(MAX_VERIFY_READ_BYTES + 1, "NEEDLE"))
+        self._write("ok.txt", b"fine content")
+        result = self.make_verifier().verify(
+            [
+                FileExpectation("ok.txt", contains="fine content"),
+                FileExpectation("big.bin", contains="NEEDLE"),
+            ],
+            self.temp_dir,
+        )
+        self.assertFalse(result.passed)
+        self.assertEqual(len(result.checks), 2)
+        self.assertTrue(result.checks[0].passed)
+        self.assertFalse(result.checks[1].passed)
+        self.assertIn("too large", result.checks[1].actual)
+        self.assertIn("1 of 2 checks failed", result.reason)
+
+    # --- E. newline normalisation is preserved ----------------------------
+
+    def test_crlf_file_within_bound_still_matches_lf_needle(self) -> None:
+        """``Path.read_text`` normalises CRLF/CR to LF; that must not change."""
+        self._write("crlf.txt", b"line one\r\nline two\rline three\r\n")
+        result = self.make_verifier().verify(
+            [FileExpectation("crlf.txt", contains="line one\nline two\nline three")],
+            self.temp_dir,
+        )
+        self.assertTrue(result.passed, result.reason)
+
+    def test_cr_only_file_within_bound_still_matches_lf_needle(self) -> None:
+        self._write("cr.txt", b"a\rb")
+        result = self.make_verifier().verify(
+            [FileExpectation("cr.txt", contains="a\nb")],
+            self.temp_dir,
+        )
+        self.assertTrue(result.passed, result.reason)
+
+    def test_newline_normalisation_matches_inspection_reader(self) -> None:
+        """The verifier and ``WorkspaceInspector`` must agree on line endings."""
+        from core.inspection import WorkspaceInspector  # noqa: PLC0415
+
+        payload = b"x\r\ny\rz\n"
+        self._write("crlf.txt", payload)
+        result = self.make_verifier().verify(
+            [FileExpectation("crlf.txt", contains="x\ny\nz\n")],
+            self.temp_dir,
+        )
+        self.assertTrue(result.passed, result.reason)
+        inspected = WorkspaceInspector(self.temp_dir).read_text("crlf.txt")
+        self.assertEqual(inspected, "x\ny\nz\n")
+
+    # --- F. safety: no mutation -------------------------------------------
+
+    def test_oversized_verification_does_not_modify_the_target(self) -> None:
+        before = sorted(str(p) for p in self.temp_dir.rglob("*"))
+        payload = self._payload_with(MAX_VERIFY_READ_BYTES + 1, "NEEDLE")
+        self._write("big.bin", payload)
+        after_write = sorted(str(p) for p in self.temp_dir.rglob("*"))
+
+        result = self.make_verifier().verify(
+            [FileExpectation("big.bin", contains="NEEDLE")],
+            self.temp_dir,
+        )
+        self.assertFalse(result.passed)
+
+        self.assertEqual(before + [str(self.temp_dir / "big.bin")], after_write)
+        self.assertEqual(
+            sorted(str(p) for p in self.temp_dir.rglob("*")), after_write
+        )
+        self.assertEqual((self.temp_dir / "big.bin").read_bytes(), payload)
+
+    def test_malformed_and_oversized_verification_create_no_files(self) -> None:
+        self._write("big.bin", b"a" * (MAX_VERIFY_READ_BYTES + 1))
+        self._write("ok.txt", b"fine")
+        baseline = sorted(str(p) for p in self.temp_dir.rglob("*"))
+
+        verifier = self.make_verifier()
+        verifier.verify([], self.temp_dir)
+        verifier.verify(None, self.temp_dir)
+        verifier.verify(["junk"], self.temp_dir)
+        verifier.verify(
+            [FileExpectation("big.bin", contains="NEEDLE")], self.temp_dir
+        )
+        verifier.verify([FileExpectation("ok.txt", contains="fine")], self.temp_dir)
+
+        # Verification must neither create nor modify anything, and the
+        # oversized target must survive byte-for-byte.
+        self.assertEqual(
+            sorted(str(p) for p in self.temp_dir.rglob("*")), baseline
+        )
+        self.assertEqual(
+            (self.temp_dir / "big.bin").read_bytes(),
+            b"a" * (MAX_VERIFY_READ_BYTES + 1),
+        )
+
+
+def inspect_max_bytes_default() -> int:
+    """Return ``WorkspaceInspector.read_text``'s ``max_bytes`` default."""
+    from core.inspection import WorkspaceInspector  # noqa: PLC0415
+    import inspect as _inspect  # noqa: PLC0415
+
+    signature = _inspect.signature(WorkspaceInspector.read_text)
+    return int(signature.parameters["max_bytes"].default)
+
 
 class TestSecurityContainment(FilesystemVerifierTestBase):
     """The verifier itself enforces the workspace boundary.
