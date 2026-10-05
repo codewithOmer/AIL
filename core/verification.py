@@ -10,6 +10,17 @@ independently, so a planner or executor that supplies an unsafe expectation
 cannot make it read, stat, or assert anything outside the configured
 workspace.  Containment is decided with component-aware path comparison, not
 string prefixes.
+
+Non-vacuity (Milestone 2F.3): ``passed=True`` is only ever returned after at
+least one check was actually performed and every performed check passed.  An
+empty expectation set therefore FAILS rather than passing through
+``all([])``, and an expectation this verifier cannot consume becomes a failed
+``CheckResult`` instead of an ``AttributeError`` or ``TypeError`` escaping
+``verify``.  The verifier refuses to certify success it has no evidence for,
+independently of whatever planner or executor supplied the expectations.  This
+is the same "enforce it where it is used, not where it is called" boundary as
+2F.2 containment: only the real filesystem check is trusted, and only a check
+that actually ran may contribute to the verdict.
 """
 
 from __future__ import annotations
@@ -35,12 +46,17 @@ class FilesystemVerifier(Verifier):
         # The base is kept unresolved for reporting compatibility; containment
         # itself always compares resolved Path objects.
         base = Path(base_dir)
-        results = [self._check(base, exp) for exp in expectations]
-        passed = all(r.passed for r in results)
-        failed = [r.name for r in results if not r.passed]
-        if passed:
+        results = self._check_all(base, expectations)
+        passed = bool(results) and all(r.passed for r in results)
+        if not results:
+            # `bool(results)` is what makes the verdict non-vacuous: a plan that
+            # declares nothing to check is never a pass.  `all([])` is True and
+            # would otherwise certify success with zero evidence performed.
+            reason = "No expectations to verify: no checks were performed"
+        elif passed:
             reason = "All checks passed"
         else:
+            failed = [r.name for r in results if not r.passed]
             reason = (
                 f"{len(failed)} of {len(results)} checks failed: "
                 + ", ".join(failed)
@@ -50,6 +66,73 @@ class FilesystemVerifier(Verifier):
             reason=reason,
             checks=tuple(results),
         )
+
+    def _check_all(self, base: Path, expectations: Any) -> list[CheckResult]:
+        """Run one check per expectation, or report why none could be run.
+
+        Malformed *structure* is handled here at the boundary: a
+        non-iterable container, an empty set, or an expectation of a type this
+        verifier does not support.  The real filesystem verification in
+        ``_check`` is left unguarded, so genuine programming or filesystem
+        errors still surface instead of being laundered into a check result.
+        """
+        try:
+            iterator = iter(expectations)
+        except TypeError:
+            return [
+                CheckResult(
+                    name="<expectations>",
+                    passed=False,
+                    expected="an iterable of expectations",
+                    actual=(
+                        f"unsupported expectations container of type "
+                        f"{type(expectations).__name__}"
+                    ),
+                    error="Unsupported expectations: not an iterable container",
+                )
+            ]
+
+        results: list[CheckResult] = []
+        while True:
+            try:
+                expectation = next(iterator)
+            except StopIteration:
+                break
+            except TypeError as exc:
+                # A container that iterates for a while and then turns
+                # non-iterable: record it and keep the checks already made.
+                results.append(
+                    CheckResult(
+                        name="<expectations>",
+                        passed=False,
+                        expected="an iterable of expectations",
+                        actual="expectations iteration error",
+                        error=f"Unsupported expectations: {exc.__class__.__name__}",
+                    )
+                )
+                break
+            if isinstance(expectation, FileExpectation):
+                results.append(self._check(base, expectation))
+            else:
+                # Type-oriented information only.  The value itself is never
+                # rendered, because it is untrusted and may carry paths or
+                # content that must not reach an executor-facing message.
+                results.append(
+                    CheckResult(
+                        name=f"<expectation:{type(expectation).__name__}>",
+                        passed=False,
+                        expected="a supported expectation type",
+                        actual=(
+                            f"unsupported expectation of type "
+                            f"{type(expectation).__name__}"
+                        ),
+                        error=(
+                            "Unsupported expectation: FilesystemVerifier only "
+                            "verifies FileExpectation"
+                        ),
+                    )
+                )
+        return results
 
     def _check(self, base: Path, exp: FileExpectation) -> CheckResult:
         candidate = base / exp.path

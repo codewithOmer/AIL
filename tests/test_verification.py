@@ -118,6 +118,250 @@ class TestFilesystemVerifier(FilesystemVerifierTestBase):
         self.assertEqual(before, after)
         self.assertEqual(path.read_text(encoding="utf-8"), "content")
 
+
+class TestNonVacuousVerification(FilesystemVerifierTestBase):
+    """``passed=True`` requires at least one check that actually ran (2F.3).
+
+    The verifier refuses to certify success it has no evidence for.  These
+    cases call ``FilesystemVerifier.verify`` directly, with no planner, runner
+    or agent in the loop: a plan that declares nothing to check, or an
+    expectation the verifier cannot consume, must fail at this boundary rather
+    than passing vacuously or crashing out of ``verify``.
+
+    Assertions about unsupported expectations are deliberately type-oriented.
+    They check the *type name* the verifier reports, never the rendered value,
+    so they stay valid for any object whose ``str`` is arbitrary.
+    """
+
+    def test_empty_list_fails(self) -> None:
+        result = self.make_verifier().verify([], self.temp_dir)
+        self.assertFalse(result.passed)
+        self.assertEqual(result.checks, ())
+
+    def test_empty_tuple_fails(self) -> None:
+        result = self.make_verifier().verify((), self.temp_dir)
+        self.assertFalse(result.passed)
+        self.assertEqual(result.checks, ())
+
+    def test_empty_generator_fails(self) -> None:
+        result = self.make_verifier().verify(iter(()), self.temp_dir)
+        self.assertFalse(result.passed)
+        self.assertEqual(result.checks, ())
+
+    def test_empty_expectations_never_report_all_checks_passed(self) -> None:
+        """``all([])`` is True; the empty set must not inherit that verdict."""
+        for empty in ([], (), iter(()), set()):
+            with self.subTest(kind=type(empty).__name__):
+                result = self.make_verifier().verify(empty, self.temp_dir)
+                self.assertFalse(result.passed)
+                self.assertNotEqual(result.reason, "All checks passed")
+                self.assertIn("no checks were performed", result.reason.lower())
+
+    def test_empty_expectations_do_not_raise(self) -> None:
+        # An empty set is a controlled failure, not an error condition.
+        self.make_verifier().verify([], self.temp_dir)
+        self.make_verifier().verify((), self.temp_dir)
+        self.make_verifier().verify(iter(()), self.temp_dir)
+
+    def test_empty_expectations_still_touch_no_file(self) -> None:
+        before = sorted(str(p) for p in self.temp_dir.rglob("*"))
+        self.make_verifier().verify([], self.temp_dir)
+        after = sorted(str(p) for p in self.temp_dir.rglob("*"))
+        self.assertEqual(before, after)
+
+    def test_unsupported_string_expectation_fails_without_raising(self) -> None:
+        """A ``str`` has no ``.path``; it must not raise ``AttributeError``."""
+        result = self.make_verifier().verify(["workspace-prepared"], self.temp_dir)
+        self.assertFalse(result.passed)
+        self.assertEqual(len(result.checks), 1)
+        check = result.checks[0]
+        self.assertFalse(check.passed)
+        self.assertIn("str", check.actual)
+        self.assertIn("str", check.name)
+
+    def test_unsupported_object_expectation_fails_without_raising(self) -> None:
+        class SomeExpectation:
+            pass
+
+        result = self.make_verifier().verify([SomeExpectation()], self.temp_dir)
+        self.assertFalse(result.passed)
+        self.assertEqual(len(result.checks), 1)
+        self.assertFalse(result.checks[0].passed)
+        self.assertIn("SomeExpectation", result.checks[0].actual)
+
+    def test_bare_object_expectation_fails_without_raising(self) -> None:
+        result = self.make_verifier().verify([object()], self.temp_dir)
+        self.assertFalse(result.passed)
+        self.assertEqual(len(result.checks), 1)
+        self.assertFalse(result.checks[0].passed)
+        self.assertIn("object", result.checks[0].actual)
+
+    def test_none_expectation_fails_without_raising(self) -> None:
+        result = self.make_verifier().verify([None], self.temp_dir)
+        self.assertFalse(result.passed)
+        self.assertEqual(len(result.checks), 1)
+        self.assertFalse(result.checks[0].passed)
+        self.assertIn("NoneType", result.checks[0].actual)
+
+    def test_unsupported_expectation_reports_type_not_value(self) -> None:
+        """The failure must not render the untrusted value itself.
+
+        ``core.recovery`` feeds failed-check detail to the executor, so an
+        arbitrary object's ``str`` must never be copied into the check.
+        """
+        secret = object()
+        result = self.make_verifier().verify([secret], self.temp_dir)
+        check = result.checks[0]
+        rendered = " ".join(
+            part for part in (check.name, check.expected, check.actual, check.error or "")
+        )
+        self.assertNotIn(str(secret), rendered)
+        self.assertIn("object", rendered)
+
+    def test_mixed_valid_and_invalid_expectations_produce_two_checks(self) -> None:
+        (self.temp_dir / "valid.txt").write_text("content")
+
+        result = self.make_verifier().verify(
+            [FileExpectation("valid.txt"), "junk"],
+            self.temp_dir,
+        )
+
+        self.assertFalse(result.passed)
+        self.assertEqual(len(result.checks), 2)
+        self.assertTrue(result.checks[0].passed, "the valid expectation is checked")
+        self.assertFalse(result.checks[1].passed, "the invalid one fails")
+        self.assertIn("1 of 2 checks failed", result.reason)
+
+    def test_invalid_expectation_does_not_abort_later_valid_expectations(self) -> None:
+        """An unsupported item must not stop the checks that follow it."""
+        (self.temp_dir / "first.txt").write_text("content")
+        # "second.txt" is never created, so its own check must genuinely fail.
+        result = self.make_verifier().verify(
+            [
+                FileExpectation("first.txt"),
+                "junk",
+                FileExpectation("second.txt"),
+            ],
+            self.temp_dir,
+        )
+
+        self.assertFalse(result.passed)
+        self.assertEqual(len(result.checks), 3)
+        self.assertTrue(result.checks[0].passed)
+        self.assertFalse(result.checks[1].passed)
+        self.assertIn("str", result.checks[1].actual)
+        self.assertFalse(result.checks[2].passed)
+        self.assertEqual(result.checks[2].actual, "missing")
+        self.assertIn("2 of 3 checks failed", result.reason)
+
+    def test_leading_invalid_expectation_does_not_abort_the_rest(self) -> None:
+        (self.temp_dir / "only.txt").write_text("content")
+        result = self.make_verifier().verify(
+            [None, FileExpectation("only.txt")],
+            self.temp_dir,
+        )
+        self.assertFalse(result.passed)
+        self.assertEqual(len(result.checks), 2)
+        self.assertFalse(result.checks[0].passed)
+        self.assertTrue(result.checks[1].passed)
+
+    def test_non_iterable_expectations_fail_without_type_error(self) -> None:
+        """``verify(None, base)`` must not let ``TypeError`` escape."""
+        result = self.make_verifier().verify(None, self.temp_dir)
+        self.assertFalse(result.passed)
+        self.assertEqual(len(result.checks), 1)
+        check = result.checks[0]
+        self.assertFalse(check.passed)
+        self.assertIn("NoneType", check.actual)
+        self.assertIsNotNone(check.error)
+
+    def test_non_iterable_expectations_never_report_all_checks_passed(self) -> None:
+        for container in (None, 7, object()):
+            with self.subTest(kind=type(container).__name__):
+                result = self.make_verifier().verify(container, self.temp_dir)
+                self.assertFalse(result.passed)
+                self.assertNotEqual(result.reason, "All checks passed")
+
+    def test_containment_still_rejects_before_a_valid_check_runs(self) -> None:
+        """Non-vacuity must not weaken 2F.2 containment."""
+        workspace = self.temp_dir / "workspace"
+        workspace.mkdir()
+        outside = self.temp_dir / "outside.txt"
+        outside.write_text("should never be read")
+
+        result = self.make_verifier().verify(
+            [
+                FileExpectation("../outside.txt", contains="should never be read"),
+                FileExpectation("anything.txt"),
+            ],
+            workspace,
+        )
+
+        self.assertFalse(result.passed)
+        self.assertEqual(len(result.checks), 2)
+        self.assertIn("Security violation", result.checks[0].error)
+        self.assertFalse(result.checks[1].passed)
+        self.assertEqual(result.checks[1].actual, "missing")
+
+    def test_unsafe_expectation_is_rejected_even_alongside_an_empty_verdict(self) -> None:
+        """A security violation is never laundered into a non-vacuity failure."""
+        workspace = self.temp_dir / "workspace"
+        workspace.mkdir()
+        result = self.make_verifier().verify(
+            [FileExpectation("../../etc/passwd")],
+            workspace,
+        )
+        self.assertFalse(result.passed)
+        self.assertIn("Security violation", result.checks[0].error)
+        self.assertNotIn("no checks were performed", result.reason.lower())
+
+    def test_malformed_expectations_do_not_mutate_the_filesystem(self) -> None:
+        (self.temp_dir / "stable.txt").write_text("unchanged")
+        (self.temp_dir / "adir").mkdir()
+        before = sorted(str(p) for p in self.temp_dir.rglob("*"))
+
+        verifier = self.make_verifier()
+        verifier.verify([], self.temp_dir)
+        verifier.verify(None, self.temp_dir)
+        verifier.verify(["junk"], self.temp_dir)
+        verifier.verify([None, 7, object()], self.temp_dir)
+        verifier.verify(
+            [FileExpectation("stable.txt", contains="unchanged")], self.temp_dir
+        )
+
+        after = sorted(str(p) for p in self.temp_dir.rglob("*"))
+        self.assertEqual(before, after)
+        self.assertEqual(
+            (self.temp_dir / "stable.txt").read_text(encoding="utf-8"), "unchanged"
+        )
+
+    def test_valid_expectations_still_pass_after_the_hardening(self) -> None:
+        (self.temp_dir / "a.txt").write_text("data")
+        result = self.make_verifier().verify(
+            [FileExpectation("a.txt", exists=True, contains="data")],
+            self.temp_dir,
+        )
+        self.assertTrue(result.passed)
+        self.assertEqual(result.reason, "All checks passed")
+        self.assertEqual(len(result.checks), 1)
+        self.assertTrue(result.checks[0].passed)
+
+    def test_valid_aggregation_is_unchanged(self) -> None:
+        (self.temp_dir / "a.txt").write_text("aaa")
+        result = self.make_verifier().verify(
+            [
+                FileExpectation("a.txt", exists=True),
+                FileExpectation("b.txt", exists=True),
+            ],
+            self.temp_dir,
+        )
+        self.assertFalse(result.passed)
+        self.assertEqual(len(result.checks), 2)
+        self.assertTrue(result.checks[0].passed)
+        self.assertFalse(result.checks[1].passed)
+        self.assertIn("1 of 2 checks failed", result.reason)
+        self.assertIn(str(self.temp_dir / "b.txt"), result.reason)
+
 class TestSecurityContainment(FilesystemVerifierTestBase):
     """The verifier itself enforces the workspace boundary.
 
