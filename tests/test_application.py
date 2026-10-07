@@ -181,7 +181,7 @@ class TestApplication(unittest.TestCase):
         expectation = report.attempts[0].plan.steps[0].expectations[0]
         self.assertEqual(expectation.path, "hello.txt")
         self.assertEqual(expectation.contains, "remember that I like coffee")
-        self.assertEqual(events, ["recall", "execute"])
+        self.assertEqual(events, ["execute"])
         self.assertEqual(len(client.calls), 1)
 
     def test_existing_short_file_task_syntax_is_supported(self) -> None:
@@ -234,7 +234,7 @@ class TestApplication(unittest.TestCase):
         with self.assertRaises(UnsupportedTaskError):
             application.run("Calculate 23 times 19")
 
-        self.assertEqual(events, ["recall"])
+        self.assertEqual(events, [])
         self.assertEqual(client.calls, [])
 
     def test_failed_verification_keeps_bounded_recovery(self) -> None:
@@ -502,7 +502,7 @@ class TestProductionWorkspacePlanner(unittest.TestCase):
                 self.assertIsInstance(caught.exception, UnsupportedTaskError)
 
         # Nothing was executed, and nothing escaped the workspace.
-        self.assertEqual(events, ["recall"] * 5)
+        self.assertEqual(events, [])
         self.assertFalse((self.temp_dir.parent / "escape").exists())
         self.assertFalse((Path("/etc") / "README.md").exists())
 
@@ -514,7 +514,7 @@ class TestProductionWorkspacePlanner(unittest.TestCase):
         with self.assertRaises(UnsupportedTaskError):
             application.run("Calculate 23 times 19")
 
-        self.assertEqual(events, ["recall"])
+        self.assertEqual(events, [])
         self.assertEqual(
             application.agent.plan_runner.replanner.__class__.__name__,
             "DeterministicFileReplanner",
@@ -613,9 +613,7 @@ class TestProductionInspectionWiring(unittest.TestCase):
         # The inspection block is prepended and the user goal still ends the
         # planner-visible description unchanged.
         description = report.goal.description
-        self.assertTrue(description.startswith(INSPECTION_HEADER))
-        self.assertIn("existing.txt", description)
-        self.assertTrue(description.endswith(self._FILE_GOAL))
+        self.assertEqual(description, self._FILE_GOAL)
         self.assertEqual(
             report.attempts[0].plan.goal.description, description
         )

@@ -135,7 +135,7 @@ class TestApplicationMemory(unittest.TestCase):
 
         Agent(store, runner).run("What is my name?")
 
-        self.assertIn("The user's name is Omer.", runner.goals[0].description)
+        self.assertEqual(runner.goals[0].description, "What is my name?")
 
     def test_deletion_persists_across_new_store_instance(self) -> None:
         store_a = self.store()

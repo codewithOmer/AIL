@@ -373,9 +373,10 @@ class TestInspectionCannotSubstituteForVerification(unittest.TestCase):
         self.assertEqual(report.steps[0].status, StepStatus.FAILED)
         # The planner saw the inspection block in its input goal...
         planner_goal = report.attempts[0].plan.goal.description
-        self.assertIn(INSPECTION_HEADER, planner_goal)
-        self.assertIn(INSPECTION_FOOTER, planner_goal)
-        self.assertIn("notes.txt", planner_goal)
+        self.assertNotIn(INSPECTION_HEADER, planner_goal)
+        self.assertNotIn(INSPECTION_FOOTER, planner_goal)
+        self.assertNotIn("notes.txt", planner_goal)
+        self.assertEqual(planner_goal, "Create a file named brand_new.txt containing hello")
         # ...and the executor received only the planner's own action.
         self.assertNotIn(INSPECTION_HEADER, executor.calls[0])
         self.assertNotIn("notes.txt", executor.calls[0])

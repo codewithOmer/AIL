@@ -3,12 +3,12 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
-from core.inspection import WorkspaceInspector, apply_inspection_context
+from core.inspection import WorkspaceInspector
+from core.planner import UnsupportedTaskError
 from interfaces.image import LocalImage
 from interfaces.llm import LLM
 from interfaces.memory import MemoryStore
 from interfaces.planning import ExecutionReport, Goal
-from memory.flow import apply_context
 
 if TYPE_CHECKING:
     from core.plan_runner import PlanRunner
@@ -22,7 +22,15 @@ class MockLLM(LLM):
 
 
 class Agent:
-    """Thin orchestration layer over memory recall and plan execution."""
+    """Thin orchestration layer over plan execution.
+
+    Instruction/data separation (Milestone 2F.5): the ``Goal`` handed to the
+    planner carries the actual user instruction and nothing else.  Recalled
+    memory and workspace inspection are untrusted data, so they are never
+    fetched into, nor concatenated onto, the planner's input.  The
+    deterministic planner parses narrow task syntax only and needs neither to
+    build a plan.
+    """
 
     def __init__(
         self,
@@ -48,23 +56,23 @@ class Agent:
         top_k: int = 3,
         images: Sequence[LocalImage] | None = None,
     ) -> ExecutionReport:
-        """Recall context, execute the contextual goal, and return its report."""
+        """Plan and execute the user instruction, and return its report.
+
+        ``top_k`` is accepted for interface compatibility and is deliberately
+        unused: no memory or inspection data is fetched for planning, because
+        neither may become planner instruction.  A blank instruction is
+        rejected here, before any planner runs, so surrounding context can
+        never turn an empty request into a task.
+        """
         if self.memory_store is None or self.plan_runner is None:
             raise RuntimeError("run() requires a memory store and plan runner")
 
-        original_goal = Goal(goal) if isinstance(goal, str) else goal
-        recalled = self.memory_store.recall(
-            original_goal.description,
-            top_k=top_k,
-        )
-        # Inspection is offered to the planner as labelled, untrusted data.
-        # It is never verification evidence: the verifier alone decides whether
-        # a step passed, by reading the filesystem after execution.
-        description = apply_inspection_context(
-            self.inspector,
-            apply_context(original_goal.description, recalled),
-        )
-        contextual_goal = Goal(description)
+        clean_goal = Goal(goal) if isinstance(goal, str) else goal
+        if not clean_goal.description.strip():
+            raise UnsupportedTaskError(
+                "goal must be a non-empty user instruction"
+            )
+
         if images:
-            return self.plan_runner.run(contextual_goal, images=images)
-        return self.plan_runner.run(contextual_goal)
+            return self.plan_runner.run(clean_goal, images=images)
+        return self.plan_runner.run(clean_goal)
