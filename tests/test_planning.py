@@ -148,6 +148,34 @@ class TestPlanning(unittest.TestCase):
         with self.assertRaises(ValueError):
             PlanStep(id="1", action="a", max_attempts=0)
 
+    def test_empty_action_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "action must be non-empty"):
+            PlanStep(id="x", action="")
+
+    def test_whitespace_only_action_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "action must be non-empty"):
+            PlanStep(id="x", action="  \t\n  ")
+
+    def test_valid_action_still_accepted(self) -> None:
+        step = PlanStep(id="x", action="do the thing")
+        self.assertEqual(step.action, "do the thing")
+        validate_plan(Plan(goal=Goal("x"), steps=(step,)))
+
+    def test_validate_plan_rejects_action_that_bypassed_construction(self) -> None:
+        """Defence in depth: ``validate_plan`` re-checks the action itself.
+
+        ``PlanStep`` rejects a blank action at construction, but the runner's
+        boundary must not depend on that having happened, so this mutates a
+        frozen instance the way an untrusted producer could.
+        """
+        for bad_action in ("", "   \t\n"):
+            with self.subTest(action=bad_action):
+                step = PlanStep(id="a", action="A")
+                object.__setattr__(step, "action", bad_action)
+                plan = Plan(goal=Goal("x"), steps=(step,))
+                with self.assertRaisesRegex(ValueError, "action must be non-empty"):
+                    validate_plan(plan)
+
     def test_valid_max_attempts_accepted(self) -> None:
         step = PlanStep(id="1", action="a", max_attempts=5)
         self.assertEqual(step.max_attempts, 5)

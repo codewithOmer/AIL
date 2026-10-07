@@ -387,6 +387,9 @@ def validate_plan(plan: Plan) -> None:
         sid = step.id
         if not sid or not sid.strip():
             raise ValueError("every step must have a non-empty id")
+        action = step.action
+        if not isinstance(action, str) or not action.strip():
+            raise ValueError(f"step {sid!r} action must be non-empty")
         if sid in step_ids:
             raise ValueError(f"duplicate step id: {sid!r}")
         step_ids.add(sid)

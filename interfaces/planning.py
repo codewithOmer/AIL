@@ -42,6 +42,8 @@ class PlanStep:
     def __post_init__(self) -> None:
         if not self.id or not self.id.strip():
             raise ValueError("step id must be non-empty")
+        if not isinstance(self.action, str) or not self.action.strip():
+            raise ValueError("step action must be non-empty")
         if self.max_attempts is not None and self.max_attempts < 1:
             raise ValueError("max_attempts must be None or >= 1")
 

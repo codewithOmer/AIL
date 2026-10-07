@@ -385,6 +385,23 @@ class TestPlanRunnerPolicy(PlanRunnerTestBase):
         with self.assertRaisesRegex(ValueError, "unknown step"):
             runner.run_plan(plan)
 
+    def test_invalid_action_cannot_reach_the_executor(self) -> None:
+        """``validate_plan`` runs before any step is handed to the executor.
+
+        ``PlanStep`` already rejects a blank action at construction, so this
+        mutates a frozen instance to prove the runner's own boundary still
+        stops it with zero executor calls.
+        """
+        client = ScriptedClient({})
+        step = self.step("1", "a.txt", TEXT_A)
+        object.__setattr__(step, "action", "   ")
+
+        runner = self.runner(client)
+        with self.assertRaisesRegex(ValueError, "action must be non-empty"):
+            runner.run_plan(Plan(goal=Goal("fake goal"), steps=(step,)))
+
+        self.assertEqual(client.calls, [])
+
     def test_run_uses_planner_goal_and_thread_id_passthrough(self) -> None:
         captured: dict[str, Any] = {}
 
