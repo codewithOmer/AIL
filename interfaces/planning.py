@@ -38,6 +38,7 @@ class PlanStep:
     expectations: tuple[Any, ...] = ()
     depends_on: tuple[str, ...] = ()
     max_attempts: int | None = None
+    tool: str | None = None
 
     def __post_init__(self) -> None:
         if not self.id or not self.id.strip():
@@ -46,6 +47,10 @@ class PlanStep:
             raise ValueError("step action must be non-empty")
         if self.max_attempts is not None and self.max_attempts < 1:
             raise ValueError("max_attempts must be None or >= 1")
+        if self.tool is not None and not isinstance(self.tool, str):
+            raise ValueError("tool must be None or a string")
+        if isinstance(self.tool, str) and not self.tool.strip():
+            raise ValueError("tool must be a non-empty string")
 
 
 @dataclass(frozen=True)

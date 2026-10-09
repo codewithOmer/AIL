@@ -180,6 +180,50 @@ class TestPlanning(unittest.TestCase):
         step = PlanStep(id="1", action="a", max_attempts=5)
         self.assertEqual(step.max_attempts, 5)
 
+    def test_tool_defaults_to_none(self) -> None:
+        self.assertIsNone(PlanStep(id="1", action="a").tool)
+
+    def test_valid_tool_name_accepted_and_preserved(self) -> None:
+        step = PlanStep(id="1", action="a", tool="writer")
+        self.assertEqual(step.tool, "writer")
+        validate_plan(Plan(goal=Goal("x"), steps=(step,)))
+
+    def test_explicit_empty_tool_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "tool must be a non-empty string"):
+            PlanStep(id="1", action="a", tool="")
+
+    def test_whitespace_only_tool_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "tool must be a non-empty string"):
+            PlanStep(id="1", action="a", tool="  \t\n ")
+
+    def test_non_string_tool_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "tool must be None or a string"):
+            PlanStep(id="1", action="a", tool=123)  # type: ignore[arg-type]
+
+    def test_tool_is_last_field_so_positional_construction_is_stable(self) -> None:
+        step = PlanStep("1", "a", (), (), 3)
+        self.assertIsNone(step.tool)
+        self.assertEqual(step.max_attempts, 3)
+
+    def test_validate_plan_rejects_blank_tool_that_bypassed_construction(self) -> None:
+        """Defence in depth: ``validate_plan`` re-checks the tool itself."""
+        for bad_tool in ("", "   \t\n"):
+            with self.subTest(tool=bad_tool):
+                step = PlanStep(id="a", action="A")
+                object.__setattr__(step, "tool", bad_tool)
+                with self.assertRaisesRegex(
+                    ValueError, "tool must be a non-empty string"
+                ):
+                    validate_plan(Plan(goal=Goal("x"), steps=(step,)))
+
+    def test_validate_plan_rejects_non_string_tool_that_bypassed_construction(
+        self,
+    ) -> None:
+        step = PlanStep(id="a", action="A")
+        object.__setattr__(step, "tool", 123)
+        with self.assertRaisesRegex(ValueError, "tool must be None or a string"):
+            validate_plan(Plan(goal=Goal("x"), steps=(step,)))
+
     def test_arbitrary_expectations_opaque(self) -> None:
         class Opaque:
             pass

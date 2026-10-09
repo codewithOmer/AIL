@@ -98,6 +98,7 @@ class PlanRunnerTestBase(unittest.TestCase):
         default_max_attempts: int = 2,
         replanner: Replanner | None = None,
         timeout: float | None = None,
+        tools: dict[str, Any] | None = None,
     ) -> PlanRunner:
         return PlanRunner(
             planner=DeterministicPlanner(),
@@ -108,6 +109,7 @@ class PlanRunnerTestBase(unittest.TestCase):
             default_max_attempts=default_max_attempts,
             replanner=replanner,
             timeout=timeout,
+            tools=tools,
         )
 
     def run_steps(self, client: Any, steps: tuple[PlanStep, ...]) -> ExecutionReport:
@@ -455,6 +457,120 @@ class TestPlanRunnerPolicy(PlanRunnerTestBase):
         self.assertEqual(captured["thread_id"], "thread-42")
 
 
+class TestPlanRunnerToolBinding(PlanRunnerTestBase):
+    """Per-step tool binding (Milestone 2F.8).
+
+    ``PlanStep.tool is None`` keeps the runner's default ``client``; a declared
+    name must be registered with the runner or the whole plan is rejected
+    before any step (and therefore any side effect) runs.
+    """
+
+    def test_none_tool_uses_the_default_client(self) -> None:
+        target = self.temp_dir / "a.txt"
+        default = ScriptedClient({"a.txt": (1, target, TEXT_A)})
+        unused = ScriptedClient({})
+
+        report = self.runner(default, tools={"writer": unused}).run_plan(
+            Plan(goal=Goal("g"), steps=(self.step("1", "a.txt", TEXT_A),))
+        )
+
+        self.assertTrue(report.passed)
+        self.assertEqual(len(default.calls), 1)
+        self.assertEqual(unused.calls, [])
+
+    def test_declared_tool_routes_to_the_registered_executor(self) -> None:
+        target = self.temp_dir / "tool.txt"
+        default = ScriptedClient({})
+        writer = ScriptedClient({"tool.txt": (1, target, TEXT_A)})
+
+        report = self.runner(default, tools={"writer": writer}).run_plan(
+            Plan(
+                goal=Goal("g"),
+                steps=(self.step("1", "tool.txt", TEXT_A, tool="writer"),),
+            )
+        )
+
+        self.assertTrue(report.passed)
+        self.assertTrue(target.exists())
+        self.assertEqual(default.calls, [])
+        self.assertEqual(len(writer.calls), 1)
+
+    def test_each_step_resolves_its_own_executor(self) -> None:
+        a = self.temp_dir / "a.txt"
+        b = self.temp_dir / "b.txt"
+        default = ScriptedClient({"a.txt": (1, a, TEXT_A)})
+        writer = ScriptedClient({"b.txt": (1, b, TEXT_B)})
+
+        report = self.runner(default, tools={"writer": writer}).run_plan(
+            Plan(
+                goal=Goal("g"),
+                steps=(
+                    self.step("1", "a.txt", TEXT_A),
+                    self.step("2", "b.txt", TEXT_B, tool="writer"),
+                ),
+            )
+        )
+
+        self.assertTrue(report.passed)
+        self.assertEqual(len(default.calls), 1)
+        self.assertEqual(len(writer.calls), 1)
+        self.assertIn("a.txt", default.calls[0])
+        self.assertIn("b.txt", writer.calls[0])
+
+    def test_unknown_tool_rejected_before_any_executor_call(self) -> None:
+        default = ScriptedClient({})
+        with self.assertRaisesRegex(ValueError, "unknown tool"):
+            self.runner(default).run_plan(
+                Plan(
+                    goal=Goal("g"),
+                    steps=(self.step("1", "a.txt", TEXT_A, tool="ghost"),),
+                )
+            )
+        self.assertEqual(default.calls, [])
+
+    def test_declared_tool_fails_closed_without_a_registry(self) -> None:
+        default = ScriptedClient({})
+        with self.assertRaisesRegex(ValueError, "unknown tool"):
+            self.runner(default).run_plan(
+                Plan(
+                    goal=Goal("g"),
+                    steps=(self.step("1", "a.txt", TEXT_A, tool="writer"),),
+                )
+            )
+        self.assertEqual(default.calls, [])
+
+    def test_declared_tool_fails_closed_when_not_in_registry(self) -> None:
+        default = ScriptedClient({})
+        other = ScriptedClient({})
+        with self.assertRaisesRegex(ValueError, "unknown tool"):
+            self.runner(default, tools={"other": other}).run_plan(
+                Plan(
+                    goal=Goal("g"),
+                    steps=(self.step("1", "a.txt", TEXT_A, tool="writer"),),
+                )
+            )
+        self.assertEqual(default.calls, [])
+        self.assertEqual(other.calls, [])
+
+    def test_unknown_tool_in_later_step_prevents_partial_execution(self) -> None:
+        first = self.temp_dir / "a.txt"
+        default = ScriptedClient({"a.txt": (1, first, TEXT_A)})
+
+        with self.assertRaisesRegex(ValueError, "unknown tool"):
+            self.runner(default).run_plan(
+                Plan(
+                    goal=Goal("g"),
+                    steps=(
+                        self.step("1", "a.txt", TEXT_A),
+                        self.step("2", "b.txt", TEXT_B, tool="ghost"),
+                    ),
+                )
+            )
+
+        self.assertEqual(default.calls, [])
+        self.assertFalse(first.exists())
+
+
 class TestPlanRunnerReplanning(PlanRunnerTestBase):
     def replacement_plan(self, goal: Goal | None = None) -> Plan:
         return Plan(
@@ -600,6 +716,36 @@ class TestPlanRunnerReplanning(PlanRunnerTestBase):
         self.assertEqual(len(report.attempts), 1)
         self.assertEqual(len(client.calls), 2)
         self.assertTrue(all("replacement.txt" not in call for call in client.calls))
+
+    def test_replacement_with_unregistered_tool_is_discarded(self) -> None:
+        """2F.8: a replacement declaring an unregistered tool is discarded.
+
+        Tool validation is part of the existing replacement guard, so an
+        unknown tool name returns the initial failed report instead of
+        propagating ``ValueError``, and no executor runs the replacement.
+        """
+        invalid = Plan(
+            goal=Goal("invalid"),
+            steps=(
+                self.step("replacement", "replacement.txt", TEXT_B, tool="ghost"),
+            ),
+        )
+        replanner = FixedReplanner(invalid)
+        default = ScriptedClient({})
+        other = ScriptedClient({})
+
+        report = self.runner(
+            default,
+            replanner=replanner,
+            tools={"other": other},
+        ).run_plan(Plan(goal=Goal("initial"), steps=(self.step("initial", "a.txt", TEXT_A),)))
+
+        self.assertFalse(report.passed)
+        self.assertEqual(len(replanner.calls), 1)
+        self.assertEqual(len(report.attempts), 1)
+        self.assertEqual(len(default.calls), 2)
+        self.assertEqual(other.calls, [])
+        self.assertTrue(all("replacement.txt" not in call for call in default.calls))
 
 
 if __name__ == "__main__":

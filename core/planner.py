@@ -398,6 +398,10 @@ def validate_plan(plan: Plan) -> None:
                 f"step {sid!r} max_attempts must be None or >= 1, "
                 f"got {step.max_attempts}"
             )
+        if step.tool is not None and not isinstance(step.tool, str):
+            raise ValueError(f"step {sid!r} tool must be None or a string")
+        if isinstance(step.tool, str) and not step.tool.strip():
+            raise ValueError(f"step {sid!r} tool must be a non-empty string")
         if len(set(step.depends_on)) != len(step.depends_on):
             raise ValueError(f"step {sid!r} lists a dependency more than once")
 

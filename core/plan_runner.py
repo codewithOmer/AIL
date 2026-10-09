@@ -13,7 +13,7 @@ authority for step success.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from core.planner import validate_plan
@@ -52,6 +52,7 @@ class PlanRunner:
         thread_id: str | None = None,
         replanner: Replanner | None = None,
         timeout: float | None = None,
+        tools: Mapping[str, Any] | None = None,
     ) -> None:
         self.planner = planner
         self.client = client
@@ -62,6 +63,7 @@ class PlanRunner:
         self.thread_id = thread_id
         self.replanner = replanner
         self.timeout = timeout
+        self.tools = dict(tools) if tools is not None else {}
 
     def run(
         self,
@@ -98,6 +100,7 @@ class PlanRunner:
 
         try:
             validate_plan(replacement)
+            self._validate_step_tools(replacement)
         except ValueError:
             return initial
 
@@ -109,6 +112,27 @@ class PlanRunner:
             attempts=initial.attempts + final.attempts,
         )
 
+    def _validate_step_tools(self, plan: Plan) -> None:
+        """Reject steps whose declared tool is not registered with the runner.
+
+        Runs before any step executes, so an unknown tool can never reach an
+        executor or allow an earlier step to run before the plan is rejected.
+        ``None`` needs no registration because it selects the runner's default
+        ``client``.
+        """
+        unknown = sorted(
+            {
+                step.tool
+                for step in plan.steps
+                if step.tool is not None and step.tool not in self.tools
+            }
+        )
+        if unknown:
+            raise ValueError(
+                "unknown tool(s) not registered with the runner: "
+                + ", ".join(repr(name) for name in unknown)
+            )
+
     def _execute_plan(
         self,
         plan: Plan,
@@ -116,6 +140,7 @@ class PlanRunner:
         images: Sequence[LocalImage] | None = None,
     ) -> ExecutionReport:
         validate_plan(plan)
+        self._validate_step_tools(plan)
 
         results: list[StepResult] = []
         passed_ids: set[str] = set()
@@ -147,9 +172,10 @@ class PlanRunner:
                 )
                 continue
 
+            executor = self.client if step.tool is None else self.tools[step.tool]
             try:
                 recovery = execute_with_recovery(
-                    self.client,
+                    executor,
                     self.verifier,
                     step.action,
                     step.expectations,
