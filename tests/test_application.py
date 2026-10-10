@@ -26,13 +26,15 @@ from interfaces.planning import (  # noqa: E402
     ExecutionReport,
     Goal,
     Plan,
+    PlanAttempt,
     PlanStep,
     StepResult,
     StepStatus,
 )
+from interfaces.recovery import RecoveryResult  # noqa: E402
 from integrations.open_interpreter.config import OIConfig  # noqa: E402
 from interfaces.memory import Memory, MemoryStore  # noqa: E402
-from core.verification import FileExpectation  # noqa: E402
+from core.verification import FileExpectation, VerificationResult  # noqa: E402
 
 
 class RecordingMemoryStore(MemoryStore):
@@ -391,6 +393,69 @@ class TestApplication(unittest.TestCase):
             attempts=(),
         )
         self.assertIsNone(replanner.replan(supported, unrecoverable_report))
+
+    def test_replanner_preserves_named_tool_on_replacement(self) -> None:
+        replanner = DeterministicFileReplanner()
+        expectation = FileExpectation("hello.txt", contains="expected")
+        plan = Plan(
+            goal=Goal("Create hello.txt containing expected"),
+            steps=(
+                PlanStep(
+                    id="create-file",
+                    action="create",
+                    expectations=(expectation,),
+                    tool="writer",
+                ),
+            ),
+        )
+        report = ExecutionReport(
+            goal=plan.goal,
+            passed=False,
+            steps=(
+                StepResult(
+                    step_id="create-file",
+                    action="create",
+                    status=StepStatus.FAILED,
+                    recovery=RecoveryResult(
+                        passed=False,
+                        attempts=1,
+                        reason="verification failed",
+                        verification=VerificationResult(
+                            passed=False,
+                            reason="file missing",
+                        ),
+                    ),
+                ),
+            ),
+            attempts=(
+                PlanAttempt(
+                    plan=plan,
+                    passed=False,
+                    steps=(
+                        StepResult(
+                            step_id="create-file",
+                            action="create",
+                            status=StepStatus.FAILED,
+                            recovery=RecoveryResult(
+                                passed=False,
+                                attempts=1,
+                                reason="verification failed",
+                                verification=VerificationResult(
+                                    passed=False,
+                                    reason="file missing",
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        replacement = replanner.replan(plan, report)
+
+        self.assertIsNotNone(replacement)
+        assert replacement is not None
+        self.assertEqual(replacement.steps[0].tool, "writer")
 
 
 class TestProductionWorkspacePlanner(unittest.TestCase):

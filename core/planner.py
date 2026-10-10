@@ -187,6 +187,7 @@ class DeterministicFileReplanner(Replanner):
             ),
             depends_on=step.depends_on,
             max_attempts=step.max_attempts,
+            tool=step.tool,
         )
         return Plan(goal=plan.goal, steps=(replacement_step,))
 
