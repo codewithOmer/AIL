@@ -18,6 +18,14 @@ from typing import Any
 
 from core.planner import validate_plan
 from core.recovery import execute_with_recovery
+from core.actions import VerificationError
+from integrations.open_interpreter.client import (
+    OIConnectionError,
+    OIError,
+    OITimeoutError,
+    OITransportFailure,
+)
+from integrations.open_interpreter.transport import OITransportError
 from interfaces.image import LocalImage
 from interfaces.planning import (
     ExecutionReport,
@@ -27,6 +35,7 @@ from interfaces.planning import (
     Planner,
     Replanner,
     StepResult,
+    StepFailureKind,
     StepStatus,
 )
 from interfaces.recovery import RecoveryStrategy
@@ -197,6 +206,11 @@ class PlanRunner:
                         action=step.action,
                         status=status,
                         recovery=recovery,
+                        failure_kind=(
+                            StepFailureKind.NONE
+                            if recovery.passed
+                            else StepFailureKind.VERIFICATION
+                        ),
                     )
                 )
                 if recovery.passed:
@@ -205,12 +219,14 @@ class PlanRunner:
                     failed = True
             except Exception as exc:  # executor/verification crash stays contained
                 failed = True
+                failure_kind = _failure_kind(exc)
                 results.append(
                     StepResult(
                         step_id=step.id,
                         action=step.action,
                         status=StepStatus.FAILED,
                         error=str(exc),
+                        failure_kind=failure_kind,
                     )
                 )
 
@@ -230,3 +246,16 @@ class PlanRunner:
             steps=report.steps,
             attempts=(attempt,),
         )
+
+
+def _failure_kind(exc: Exception) -> StepFailureKind:
+    if isinstance(exc, VerificationError):
+        return StepFailureKind.VERIFICATION
+    if isinstance(
+        exc,
+        (OITransportFailure, OIConnectionError, OITimeoutError, OITransportError),
+    ):
+        return StepFailureKind.TRANSPORT
+    if isinstance(exc, OIError):
+        return StepFailureKind.EXECUTOR
+    return StepFailureKind.EXECUTOR

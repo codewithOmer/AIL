@@ -7,7 +7,13 @@ from io import StringIO
 from unittest.mock import AsyncMock, patch
 
 from core.application import AILApplication
-from interfaces.planning import ExecutionReport, Goal
+from interfaces.planning import (
+    ExecutionReport,
+    Goal,
+    StepFailureKind,
+    StepResult,
+    StepStatus,
+)
 
 import main
 
@@ -26,6 +32,26 @@ class FakeApplication:
 
 
 class TestMain(unittest.TestCase):
+    def test_report_preserves_executor_failure_context(self) -> None:
+        report = ExecutionReport(
+            goal=Goal("goal"),
+            passed=False,
+            steps=(
+                StepResult(
+                    "step-1",
+                    "action",
+                    StepStatus.FAILED,
+                    error="quota exhausted",
+                    failure_kind=StepFailureKind.EXECUTOR,
+                ),
+            ),
+        )
+        with patch("builtins.print") as printer:
+            main._print_report(report)
+        printer.assert_called_once_with(
+            "AIL: task failed (step-1 (executor failure: quota exhausted))"
+        )
+
     def test_mock_mode_remains_compatible(self) -> None:
         with patch("builtins.input", return_value="hello"), patch("builtins.print") as printer:
             main.run_mock_mode()

@@ -20,6 +20,10 @@ if TYPE_CHECKING:
     from integrations.open_interpreter.client import OIResponse
 
 
+class VerificationError(RuntimeError):
+    """The verification stage failed to produce a verification result."""
+
+
 def execute_and_verify(
     client: Any,
     verifier: Any,
@@ -51,5 +55,8 @@ def execute_and_verify(
         if images:
             kwargs["images"] = images
         response = client.send_message(message, **kwargs)
-    result = verifier.verify(expectations, base_dir)
+    try:
+        result = verifier.verify(expectations, base_dir)
+    except Exception as exc:
+        raise VerificationError(f"Verification failed: {exc}") from exc
     return response, result

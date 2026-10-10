@@ -26,13 +26,56 @@ from core.planner import (  # noqa: E402
     validate_plan,
 )
 from core.verification import FilesystemVerifier  # noqa: E402
-from interfaces.planning import Goal, Plan, PlanStep, StepStatus  # noqa: E402
+from interfaces.planning import (  # noqa: E402
+    Goal,
+    Plan,
+    PlanStep,
+    StepFailureKind,
+    StepResult,
+    StepStatus,
+)
 from interfaces.verification import FileExpectation  # noqa: E402
 
 
 class TestPlanning(unittest.TestCase):
     def setUp(self) -> None:
         self.planner = DeterministicPlanner()
+
+    def test_step_failure_kind_values(self) -> None:
+        self.assertEqual(StepFailureKind.NONE.value, "none")
+        self.assertEqual(StepFailureKind.VERIFICATION.value, "verification")
+        self.assertEqual(StepFailureKind.EXECUTOR.value, "executor")
+        self.assertEqual(StepFailureKind.TRANSPORT.value, "transport")
+
+    def test_step_result_failure_kind_defaults_without_changing_existing_constructor(self) -> None:
+        result = StepResult("step-1", "action", StepStatus.PASSED)
+        self.assertEqual(result.failure_kind, StepFailureKind.NONE)
+
+    def test_step_result_existing_positional_arguments_retain_their_meaning(self) -> None:
+        result = StepResult(
+            "step-1",
+            "action",
+            StepStatus.FAILED,
+            None,
+            "error",
+        )
+        self.assertEqual(result.step_id, "step-1")
+        self.assertEqual(result.action, "action")
+        self.assertEqual(result.status, StepStatus.FAILED)
+        self.assertIsNone(result.recovery)
+        self.assertEqual(result.error, "error")
+        self.assertEqual(result.failure_kind, StepFailureKind.NONE)
+
+    def test_step_result_accepts_each_failure_kind(self) -> None:
+        for failure_kind in StepFailureKind:
+            with self.subTest(failure_kind=failure_kind):
+                result = StepResult(
+                    "step-1",
+                    "action",
+                    StepStatus.FAILED,
+                    failure_kind=failure_kind,
+                )
+                self.assertEqual(result.failure_kind, failure_kind)
 
     def test_deterministic_planner_creates_valid_plan(self) -> None:
         goal = Goal(description="Create a file")

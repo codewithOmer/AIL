@@ -11,6 +11,7 @@ import sys
 from core.agent import Agent, MockLLM
 from core.config import setup_logging
 from core.planner import UnsupportedTaskError
+from core.reporting import report_text
 
 
 def run_mock_mode() -> None:
@@ -104,26 +105,7 @@ def run_voice_mode() -> None:
 
 def _print_report(report) -> None:
     """Print a concise result using only the verified execution report."""
-    if report.passed:
-        message = "verified task completed"
-    else:
-        failed = [
-            step.step_id
-            for step in report.steps
-            if step.error or step.status.value == "failed"
-        ]
-        message = f"task failed ({', '.join(failed) or 'verification failure'})"
-
-    recovery_attempts = sum(
-        step.recovery.attempts
-        for step in report.steps
-        if step.recovery is not None and step.recovery.attempts > 1
-    )
-    if recovery_attempts:
-        message += f"; recovery attempts: {recovery_attempts}"
-    if len(report.attempts) > 1:
-        message += "; replanned once"
-    print(f"AIL: {message}")
+    print(f"AIL: {report_text(report)}")
 
 
 def main() -> None:

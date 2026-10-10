@@ -79,6 +79,13 @@ class StepStatus(Enum):
     SKIPPED = "skipped"
 
 
+class StepFailureKind(Enum):
+    NONE = "none"
+    VERIFICATION = "verification"
+    EXECUTOR = "executor"
+    TRANSPORT = "transport"
+
+
 @dataclass(frozen=True)
 class StepResult:
     """Runner outcome for a single :class:`PlanStep`.
@@ -92,6 +99,7 @@ class StepResult:
     status: StepStatus
     recovery: "RecoveryResult | None" = None
     error: str | None = None
+    failure_kind: StepFailureKind = StepFailureKind.NONE
 
 
 @dataclass(frozen=True)

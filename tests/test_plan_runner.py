@@ -15,7 +15,9 @@ from pathlib import Path
 from typing import Any
 
 from core.plan_runner import PlanRunner  # noqa: E402
+from core.actions import VerificationError  # noqa: E402
 from core.planner import DeterministicPlanner  # noqa: E402
+from integrations.open_interpreter.client import OITransportFailure  # noqa: E402
 from interfaces.planning import (  # noqa: E402
     ExecutionReport,
     Goal,
@@ -23,6 +25,7 @@ from interfaces.planning import (  # noqa: E402
     PlanStep,
     Replanner,
     StepStatus,
+    StepFailureKind,
 )
 from interfaces.recovery import RecoveryStrategy  # noqa: E402
 from core.verification import FileExpectation, FilesystemVerifier  # noqa: E402
@@ -70,6 +73,19 @@ class ExplodingClient:
     ) -> str:
         self.calls += 1
         raise RuntimeError("executor exploded")
+
+
+class TransportFailingClient(ExplodingClient):
+    def send_message(
+        self, message: str, thread_id: str | None = None, timeout: float | None = None
+    ) -> str:
+        self.calls += 1
+        raise OITransportFailure("connection closed during turn")
+
+
+class ExplodingVerifier:
+    def verify(self, expectations, base_dir):
+        raise VerificationError("filesystem could not be inspected")
 
 
 class FixedReplanner(Replanner):
@@ -143,6 +159,7 @@ class TestPlanRunnerBasics(PlanRunnerTestBase):
         self.assertEqual(report.goal, Goal("fake goal"))
         self.assertEqual(len(report.steps), 1)
         self.assertEqual(report.steps[0].status, StepStatus.PASSED)
+        self.assertEqual(report.steps[0].failure_kind, StepFailureKind.NONE)
         self.assertTrue(target.exists())
 
     def test_multiple_steps_execute_in_tuple_order(self) -> None:
@@ -189,6 +206,10 @@ class TestPlanRunnerBasics(PlanRunnerTestBase):
         self.assertEqual(report.steps[0].status, StepStatus.FAILED)
         self.assertIsNotNone(report.steps[0].recovery)
         self.assertIsNone(report.steps[0].error)
+        self.assertEqual(
+            report.steps[0].failure_kind,
+            StepFailureKind.VERIFICATION,
+        )
 
     def test_permanent_failure_is_fail_fast(self) -> None:
         client = ScriptedClient({})  # nothing ever verifies
@@ -219,6 +240,27 @@ class TestPlanRunnerBasics(PlanRunnerTestBase):
         self.assertIsNotNone(report.steps[0].error)
         self.assertIn("executor exploded", report.steps[0].error)
         self.assertIsNone(report.steps[0].recovery)
+        self.assertEqual(
+            report.steps[0].failure_kind,
+            StepFailureKind.EXECUTOR,
+        )
+
+    def test_transport_exception_is_classified_as_transport(self) -> None:
+        report = self.run_steps(TransportFailingClient(), (self.step("1", "a.txt", TEXT_A),))
+        self.assertEqual(report.steps[0].failure_kind, StepFailureKind.TRANSPORT)
+        self.assertIn("connection closed", report.steps[0].error)
+
+    def test_verification_exception_is_classified_as_verification(self) -> None:
+        runner = PlanRunner(
+            planner=DeterministicPlanner(),
+            client=ScriptedClient({}),
+            verifier=ExplodingVerifier(),
+            base_dir=str(self.temp_dir),
+        )
+        report = runner.run_plan(
+            Plan(goal=Goal("goal"), steps=(self.step("1", "a.txt", TEXT_A),))
+        )
+        self.assertEqual(report.steps[0].failure_kind, StepFailureKind.VERIFICATION)
 
     def test_executor_exception_is_not_retried(self) -> None:
         """An executor crash ends the step immediately.

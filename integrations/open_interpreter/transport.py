@@ -123,16 +123,11 @@ class OITransport:
         classified = classify_message(msg)
         if classified is None:
             return
-        if isinstance(classified, OIResponse):
+        if isinstance(classified, (OIResponse, OIError)):
             with self._lock:
-                self._results[classified.id] = classified
                 ev = self._pending.pop(classified.id, None)
-            if ev:
-                ev.set()
-        elif isinstance(classified, OIError):
-            with self._lock:
-                self._results[classified.id] = classified
-                ev = self._pending.pop(classified.id, None)
+                if ev is not None:
+                    self._results[classified.id] = classified
             if ev:
                 ev.set()
         elif isinstance(classified, OINotification):
@@ -155,19 +150,40 @@ class OITransport:
                 "message": f"Method not implemented in AIL adapter: {req.method}",
             },
         }
-        self._send_raw(error_response)
+        try:
+            self._send_raw(error_response)
+        except OITransportClosed:
+            logger.debug("Could not respond to server request; transport closed")
 
     def _send_raw(self, msg: dict[str, Any]) -> None:
-        proc = self._process
-        if proc is None or proc.stdin is None:
-            raise OITransportClosed("Process not running")
+        with self._lock:
+            if self._closed:
+                raise OITransportClosed("Transport is closed")
+            proc = self._process
+        if proc is None or proc.stdin is None or getattr(proc.stdin, "closed", False):
+            raise OITransportClosed("Process not running or stdin unavailable")
+        if proc.poll() is not None:
+            self._mark_closed()
+            raise OITransportClosed(f"Process terminated with exit code {proc.poll()}")
+
         payload = encode_message(msg)
         logger.debug("Sending: %s", payload.decode("utf-8", errors="replace").strip())
-        proc.stdin.write(payload)
-        proc.stdin.flush()
+        try:
+            proc.stdin.write(payload)
+            proc.stdin.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError, ValueError) as exc:
+            self._mark_closed()
+            raise OITransportClosed(
+                f"Failed to write to subprocess stdin: {exc}"
+            ) from exc
+
+    def send_raw(self, msg: dict[str, Any]) -> None:
+        self._send_raw(msg)
 
     def send_request(self, method: str, params: dict[str, Any] | None = None) -> int:
         with self._lock:
+            if self._closed:
+                raise OITransportClosed("Transport is closed")
             req_id = self._next_id
             self._next_id += 1
             ev = threading.Event()
@@ -175,29 +191,43 @@ class OITransport:
         msg: dict[str, Any] = {"id": req_id, "method": method}
         if params is not None:
             msg["params"] = params
-        self._send_raw(msg)
+        try:
+            self._send_raw(msg)
+        except Exception:
+            with self._lock:
+                self._pending.pop(req_id, None)
+            raise
         return req_id
 
     def wait_for_response(
         self, req_id: int, timeout: float | None = None
     ) -> OIResponse | OIError:
         with self._lock:
-            ev = self._pending.get(req_id)
-        if ev is None:
-            with self._lock:
-                result = self._results.pop(req_id, None)
+            result = self._results.pop(req_id, None)
             if result is not None:
                 return result
-            raise OITransportError(f"Request {req_id} not found")
+            ev = self._pending.get(req_id)
+            if ev is None:
+                if self._closed:
+                    raise OITransportClosed("Request expired or transport closed")
+                raise OITransportError(f"Request {req_id} not found")
 
         if not ev.wait(timeout=timeout):
             with self._lock:
+                result = self._results.pop(req_id, None)
+                if result is not None:
+                    return result
                 self._pending.pop(req_id, None)
             raise TimeoutError(f"Timeout waiting for response to request {req_id}")
 
         with self._lock:
-            result = self._results.pop(req_id)
-        return result
+            result = self._results.pop(req_id, None)
+            if result is not None:
+                return result
+            self._pending.pop(req_id, None)
+            if self._closed:
+                raise OITransportClosed("Request expired or transport closed")
+            raise OITransportError("Request expired or transport closed")
 
     def request(
         self,
@@ -256,37 +286,51 @@ class OITransport:
 
     @property
     def is_running(self) -> bool:
-        return self._process is not None and self._process.poll() is None
+        with self._lock:
+            if self._closed or self._process is None:
+                return False
+            return self._process.poll() is None
 
     def _mark_closed(self) -> None:
         with self._lock:
             self._closed = True
-        for ev in self._pending.values():
+            events = list(self._pending.values())
+            self._pending.clear()
+        for ev in events:
             ev.set()
-        self._pending.clear()
+        self._notification_event.set()
+        self._server_request_event.set()
 
     def close(self, timeout: float = 10.0) -> None:
-        if self._closed:
-            return
-        if self._process is None:
-            return
-        logger.info("Shutting down OI App Server (pid=%s)", self._process.pid)
-        try:
-            if self._process.stdin:
-                self._process.stdin.close()
-        except Exception:
-            logger.debug("Error closing stdin", exc_info=True)
-        try:
-            self._process.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            logger.warning("OI process did not exit, terminating")
-            self._process.kill()
-            try:
-                self._process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                logger.error("OI process could not be killed")
-        self._process = None
+        with self._lock:
+            if self._closed and self._process is None:
+                return
+            proc = self._process
+            self._process = None
+
         self._mark_closed()
-        if self._reader_thread and self._reader_thread.is_alive():
+
+        if proc is not None:
+            logger.info("Shutting down OI App Server (pid=%s)", proc.pid)
+            for stream in (proc.stdin, proc.stdout, proc.stderr):
+                if stream:
+                    try:
+                        stream.close()
+                    except Exception:
+                        logger.debug("Error closing stream", exc_info=True)
+            try:
+                proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                logger.warning("OI process did not exit, terminating")
+                proc.kill()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    logger.error("OI process could not be killed")
+        if (
+            self._reader_thread
+            and self._reader_thread.is_alive()
+            and self._reader_thread is not threading.current_thread()
+        ):
             self._reader_thread.join(timeout=3)
         logger.info("OI App Server shut down")

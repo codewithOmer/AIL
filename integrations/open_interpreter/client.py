@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from collections.abc import Sequence
 from pathlib import Path
@@ -38,6 +39,12 @@ class OIConnectionError(OIError):
 
 
 class OITimeoutError(OIError):
+    pass
+
+
+class OITransportFailure(OIConnectionError):
+    """The transport could not reliably complete an active turn."""
+
     pass
 
 
@@ -74,6 +81,7 @@ class OpenInterpreterClient:
         self._config = config or OIConfig()
         self._transport: OITransport | None = None
         self._thread_id: str | None = None
+        self._turn_lock = threading.Lock()
 
     def start(self) -> None:
         self._transport = OITransport(self._config)
@@ -158,6 +166,17 @@ class OpenInterpreterClient:
         timeout: float | None = None,
         images: Sequence[LocalImage | str | Path] | None = None,
     ) -> OIResponse:
+        """Send one turn; the App Server adapter intentionally serializes turns."""
+        with self._turn_lock:
+            return self._send_message(message, thread_id, timeout, images)
+
+    def _send_message(
+        self,
+        message: str,
+        thread_id: str | None = None,
+        timeout: float | None = None,
+        images: Sequence[LocalImage | str | Path] | None = None,
+    ) -> OIResponse:
         tid = thread_id or self._thread_id
         if tid is None:
             tid = self.create_thread()
@@ -178,10 +197,15 @@ class OpenInterpreterClient:
         inputs.append({"type": "text", "text": message})
         params: dict[str, Any] = {"threadId": tid, "input": inputs}
         logger.info("Sending turn to thread %s", tid)
-        result = self._transport.request(
-            "turn/start", params, timeout=req_timeout
-        )
+        try:
+            result = self._transport.request(
+                "turn/start", params, timeout=req_timeout
+            )
+        except OITransportError as exc:
+            raise OITransportFailure(f"Failed to start turn: {exc}") from exc
         turn_id = result.get("turn", {}).get("id", "")
+        if not turn_id:
+            raise OITransportFailure("Turn start response did not include a turn id")
         logger.info("Turn started: turn_id=%s", turn_id)
         final = self._wait_for_turn_completion(
             tid, turn_id, timeout=req_timeout
@@ -197,7 +221,6 @@ class OpenInterpreterClient:
         assert self._transport is not None
         deadline = time.monotonic() + timeout
         text_parts: dict[str, str] = {}
-        final_text = ""
         while time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
             notifs = self._transport.pop_notifications()
@@ -214,15 +237,19 @@ class OpenInterpreterClient:
                             )
                 elif n.method == "turn/completed":
                     params = n.params
-                    if params.get("threadId") == thread_id:
-                        turn = params.get("turn", {})
+                    turn = params.get("turn")
+                    if (
+                        params.get("threadId") == thread_id
+                        and isinstance(turn, dict)
+                        and turn.get("id") == turn_id
+                    ):
                         items = turn.get("items", [])
-                        for item in items:
-                            if item.get("type") == "AgentMessage":
-                                final_text = item.get("text", "")
-                        if not final_text and text_parts:
-                            final_text = "".join(text_parts.values())
-                        logger.info("Turn completed")
+                        final_text = "".join(
+                            item.get("text", "")
+                            for item in items
+                            if item.get("type") == "AgentMessage"
+                        )
+                        logger.info("Turn completed: turn_id=%s", turn_id)
                         return OIResponse(
                             text=final_text or "".join(text_parts.values()),
                             thread_id=thread_id,
@@ -231,20 +258,22 @@ class OpenInterpreterClient:
                         )
                 elif n.method == "error":
                     params = n.params
-                    logger.error("Error notification: %s", params)
-                    raise OIError(
-                        f"Server error: {params.get('message', 'unknown')}"
-                    )
+                    if (
+                        params.get("threadId") == thread_id
+                        and params.get("turnId") == turn_id
+                    ):
+                        message, details = _extract_error(params)
+                        logger.error("Error notification for turn %s: %s", turn_id, message)
+                        detail_text = f" ({details})" if details else ""
+                        raise OIError(f"Server error: {message}{detail_text}")
             if not notifs:
-                time.sleep(0.05)
-        if text_parts:
-            return OIResponse(
-                text="".join(text_parts.values()),
-                thread_id=thread_id,
-                turn_id=turn_id,
-            )
+                if not self._transport.is_running:
+                    raise OITransportFailure(
+                        f"Transport closed while waiting for turn {turn_id}"
+                    )
+                time.sleep(min(0.05, remaining))
         raise OITimeoutError(
-            f"Timeout after {timeout}s waiting for turn completion"
+            f"Timeout after {timeout}s waiting for turn {turn_id} completion"
         )
 
     def get_stderr(self) -> list[str]:
@@ -270,10 +299,32 @@ class OpenInterpreterClient:
 def _safe_params(params: dict[str, Any]) -> dict[str, Any]:
     safe = {}
     for k, v in params.items():
-        if "key" in k.lower() or "secret" in k.lower():
+        if any(
+            marker in k.lower()
+            for marker in ("key", "secret", "token", "password", "credential")
+        ):
             safe[k] = "***"
         elif isinstance(v, dict):
             safe[k] = _safe_params(v)
         else:
             safe[k] = v
     return safe
+
+
+def _extract_error(params: dict[str, Any]) -> tuple[str, str]:
+    """Extract the App Server error object without exposing sensitive fields."""
+    error = params.get("error")
+    if not isinstance(error, dict):
+        error = {}
+    message = error.get("message") or params.get("message") or "unknown server error"
+    if not isinstance(message, str):
+        message = str(message)
+    safe_error = _safe_params(
+        {
+            key: value
+            for key, value in error.items()
+            if key not in {"message", "stack", "traceback"}
+        }
+    )
+    details = ", ".join(f"{key}={value}" for key, value in safe_error.items())
+    return message, details

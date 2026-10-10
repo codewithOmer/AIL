@@ -11,6 +11,7 @@ from interfaces.audio_input import AudioInput
 from interfaces.speech import AudioPlayer, SpeechSynthesizer, SynthesizedSpeech
 from interfaces.transcription import Transcriber, Transcription
 from interfaces.planning import ExecutionReport, Goal
+from interfaces.planning import StepFailureKind, StepResult, StepStatus
 
 
 class _FakeInput(AudioInput):
@@ -105,6 +106,25 @@ class TestVoiceService(unittest.TestCase):
         self.assertEqual(response_text((object(),)), "Remembered 1 item.")
         failed = ExecutionReport(goal=Goal("goal"), passed=False, steps=())
         self.assertEqual(response_text(failed), "task failed (verification failure)")
+
+    def test_response_text_preserves_transport_failure_context(self) -> None:
+        failed = ExecutionReport(
+            goal=Goal("goal"),
+            passed=False,
+            steps=(
+                StepResult(
+                    "step-1",
+                    "action",
+                    StepStatus.FAILED,
+                    error="transport closed",
+                    failure_kind=StepFailureKind.TRANSPORT,
+                ),
+            ),
+        )
+        self.assertEqual(
+            response_text(failed),
+            "task failed (step-1 (transport failure: transport closed))",
+        )
 
 
 if __name__ == "__main__":
