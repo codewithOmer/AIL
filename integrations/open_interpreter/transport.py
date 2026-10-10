@@ -41,6 +41,7 @@ class OITransport:
         self._config = config
         self._process: subprocess.Popen[bytes] | None = None
         self._reader_thread: threading.Thread | None = None
+        self._stderr_thread: threading.Thread | None = None
         self._pending: dict[int, threading.Event] = {}
         self._results: dict[int, OIResponse | OIError] = {}
         self._notifications: list[OINotification] = []
@@ -77,10 +78,10 @@ class OITransport:
         )
         self._reader_thread.start()
 
-        stderr_thread = threading.Thread(
+        self._stderr_thread = threading.Thread(
             target=self._stderr_loop, daemon=True, name="oi-stderr"
         )
-        stderr_thread.start()
+        self._stderr_thread.start()
 
     def _read_loop(self) -> None:
         proc = self._process
@@ -307,30 +308,53 @@ class OITransport:
                 return
             proc = self._process
             self._process = None
+            reader_thread = self._reader_thread
+            self._reader_thread = None
+            stderr_thread = self._stderr_thread
+            self._stderr_thread = None
 
         self._mark_closed()
 
         if proc is not None:
             logger.info("Shutting down OI App Server (pid=%s)", proc.pid)
-            for stream in (proc.stdin, proc.stdout, proc.stderr):
+            if proc.stdin:
+                try:
+                    proc.stdin.close()
+                except Exception:
+                    logger.debug("Error closing stdin", exc_info=True)
+            try:
+                proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                logger.warning("OI process did not exit, terminating")
+                try:
+                    proc.kill()
+                except Exception:
+                    logger.debug("Error killing process", exc_info=True)
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    logger.error("OI process could not be killed")
+
+        cur_thread = threading.current_thread()
+        if (
+            reader_thread
+            and reader_thread.is_alive()
+            and reader_thread is not cur_thread
+        ):
+            reader_thread.join(timeout=3)
+        if (
+            stderr_thread
+            and stderr_thread.is_alive()
+            and stderr_thread is not cur_thread
+        ):
+            stderr_thread.join(timeout=3)
+
+        if proc is not None:
+            for stream in (proc.stdout, proc.stderr):
                 if stream:
                     try:
                         stream.close()
                     except Exception:
                         logger.debug("Error closing stream", exc_info=True)
-            try:
-                proc.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                logger.warning("OI process did not exit, terminating")
-                proc.kill()
-                try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    logger.error("OI process could not be killed")
-        if (
-            self._reader_thread
-            and self._reader_thread.is_alive()
-            and self._reader_thread is not threading.current_thread()
-        ):
-            self._reader_thread.join(timeout=3)
+
         logger.info("OI App Server shut down")

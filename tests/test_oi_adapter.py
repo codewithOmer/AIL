@@ -317,6 +317,65 @@ class TestTransportUnit(unittest.TestCase):
         finally:
             transport.close()
 
+    def test_close_kills_unresponsive_process_without_deadlock(self):
+        import subprocess
+        import sys
+        import time
+
+        # Start a local python child that ignores stdin EOF and sleeps to force the kill path
+        proc = subprocess.Popen(
+            [sys.executable, "-u", "-c", "import time; time.sleep(30)"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        transport = OITransport(OIConfig())
+        transport._process = proc
+
+        # Start stdout and stderr reader threads to reproduce buffered-reader lock contention
+        t_reader = threading.Thread(
+            target=transport._read_loop, daemon=True, name="test-oi-reader"
+        )
+        t_reader.start()
+        transport._reader_thread = t_reader
+
+        t_stderr = threading.Thread(
+            target=transport._stderr_loop, daemon=True, name="test-oi-stderr"
+        )
+        t_stderr.start()
+        transport._stderr_thread = t_stderr
+
+        # Allow threads to enter readline() on the empty pipes
+        time.sleep(0.1)
+
+        closed_event = threading.Event()
+        errors: list[Exception] = []
+
+        def do_close():
+            try:
+                transport.close(timeout=0.5)
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                closed_event.set()
+
+        close_thread = threading.Thread(target=do_close, daemon=True)
+        close_thread.start()
+
+        try:
+            finished = closed_event.wait(timeout=5.0)
+            self.assertTrue(finished, "transport.close() deadlocked on unresponsive process")
+            self.assertEqual(errors, [], f"Unexpected error during close(): {errors}")
+            self.assertIsNotNone(proc.poll(), "Child process was not reaped")
+        finally:
+            if proc.poll() is None:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=2)
+                except Exception:
+                    pass
+            close_thread.join(timeout=2)
+
 
 
 class TestClientUnit(unittest.TestCase):
