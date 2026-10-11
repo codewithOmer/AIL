@@ -6,6 +6,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from core.application import AILApplication  # noqa: E402
 from core.planner import UnsupportedTaskError  # noqa: E402
@@ -132,6 +133,16 @@ class TestApplicationIntentRouting(unittest.TestCase):
 
         self.assertIsInstance(result, ConversationResponse)
         self.assertNotIsInstance(result, ExecutionReport)
+
+    def test_conversation_uses_text_from_client_response_object(self) -> None:
+        application, _, client = self.make_application()
+        client.send_message = lambda *args, **kwargs: SimpleNamespace(
+            text="model says hello"
+        )
+
+        result = application.handle("hello")
+
+        self.assertEqual(result, ConversationResponse("model says hello"))
 
     def test_empty_and_whitespace_messages_are_rejected(self) -> None:
         application, _, client = self.make_application()
