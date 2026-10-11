@@ -12,6 +12,7 @@ from core.agent import Agent, MockLLM
 from core.config import setup_logging
 from core.planner import UnsupportedTaskError
 from core.reporting import report_text
+from interfaces.conversation import ConversationResponse
 
 
 def run_mock_mode() -> None:
@@ -49,7 +50,10 @@ def run_oi_mode() -> None:
             if isinstance(result, tuple):
                 continue
 
-            _print_report(result)
+            if isinstance(result, ConversationResponse):
+                print(f"AIL: {result.text}")
+            else:
+                _print_report(result)
     except OIConnectionError as exc:
         print(f"Failed to connect to OI App Server: {exc}", file=sys.stderr)
         sys.exit(1)

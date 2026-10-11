@@ -9,6 +9,11 @@ from pathlib import Path
 
 from core.application import AILApplication  # noqa: E402
 from core.planner import UnsupportedTaskError  # noqa: E402
+from integrations.open_interpreter.client import (  # noqa: E402
+    OIError,
+    OITransportFailure,
+)
+from interfaces.conversation import ConversationResponse  # noqa: E402
 from interfaces.planning import ExecutionReport  # noqa: E402
 from interfaces.memory import Memory, MemoryStore  # noqa: E402
 
@@ -113,11 +118,54 @@ class TestApplicationIntentRouting(unittest.TestCase):
     def test_unsupported_non_memory_message_preserves_behavior(self) -> None:
         application, store, client = self.make_application()
 
-        with self.assertRaises(UnsupportedTaskError):
-            application.handle("Calculate 23 times 19")
+        result = application.handle("Calculate 23 times 19")
 
+        self.assertIsInstance(result, ConversationResponse)
+        self.assertEqual(result.text, "executor response")
         self.assertEqual(store.memories, [])
+        self.assertEqual(client.calls, ["Calculate 23 times 19"])
+
+    def test_conversation_does_not_claim_filesystem_verification(self) -> None:
+        application, _, _ = self.make_application()
+
+        result = application.handle("hello")
+
+        self.assertIsInstance(result, ConversationResponse)
+        self.assertNotIsInstance(result, ExecutionReport)
+
+    def test_empty_and_whitespace_messages_are_rejected(self) -> None:
+        application, _, client = self.make_application()
+
+        for message in ("", "   "):
+            with self.subTest(message=repr(message)):
+                with self.assertRaises(UnsupportedTaskError):
+                    application.handle(message)
+
         self.assertEqual(client.calls, [])
+
+    def test_unsafe_file_path_is_rejected_without_conversation_fallback(self) -> None:
+        application, _, client = self.make_application()
+
+        with self.assertRaises(UnsupportedTaskError):
+            application.handle(
+                r"Create a file named ..\outside.txt containing secret"
+            )
+
+        self.assertEqual(client.calls, [])
+
+    def test_conversation_model_and_transport_failures_are_propagated(self) -> None:
+        for failure in (OIError("model failed"), OITransportFailure("transport failed")):
+            with self.subTest(failure=type(failure).__name__):
+                application, _, client = self.make_application()
+
+                def fail(*args: object, **kwargs: object) -> str:
+                    raise failure
+
+                client.send_message = fail  # type: ignore[method-assign]
+                with self.assertRaises(type(failure)) as caught:
+                    application.handle("hello")
+
+                self.assertEqual(str(caught.exception), str(failure))
 
     def test_task_payload_memory_words_are_not_persisted(self) -> None:
         application, store, client = self.make_application()

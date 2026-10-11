@@ -11,12 +11,6 @@ from core.agent import Agent
 from core.inspection import WorkspaceInspector
 from core.intent_router import DefaultIntentRouter
 from core.plan_runner import PlanRunner
-from core.planner import (
-    DeterministicFileReplanner,
-    FirstMatchPlanner,
-    SupportedFileTaskPlanner,
-    WorkspaceSetupPlanner,
-)
 from integrations.open_interpreter.client import OpenInterpreterClient
 from integrations.open_interpreter.config import OIConfig
 from memory.storage.personalai import PersonalAIMemoryStore
@@ -26,6 +20,15 @@ from interfaces.memory import Memory, MemoryStore
 from interfaces.planning import ExecutionReport, Planner, Replanner
 from memory.flow import extract_explicit_facts, store_if_new
 from core.verification import FilesystemVerifier
+from interfaces.conversation import ConversationResponse
+from core.planner import (
+    DeterministicFileReplanner,
+    FirstMatchPlanner,
+    SupportedFileTaskPlanner,
+    UnrecognizedTaskError,
+    UnsupportedTaskError,
+    WorkspaceSetupPlanner,
+)
 
 
 @dataclass
@@ -108,14 +111,32 @@ class AILApplication:
         *,
         top_k: int = 3,
         images: Sequence[LocalImage] | None = None,
-    ) -> ExecutionReport | tuple[Memory, ...]:
-        """Route one message to either memory writing or task execution."""
+    ) -> ExecutionReport | ConversationResponse | tuple[Memory, ...]:
+        """Route one message to memory, a verified task, or conversation."""
         intent = self.intent_router.route(message)
         if intent.kind is IntentKind.MEMORY:
             if images:
                 raise ValueError("images are only supported for task messages")
             return self.remember(message)
-        return self.agent.run(message, top_k=top_k, images=images)
+        try:
+            return self.agent.run(message, top_k=top_k, images=images)
+        except UnsupportedTaskError as exc:
+            if not isinstance(exc.__cause__, UnrecognizedTaskError):
+                raise
+            response = self._send_conversation(message, images=images)
+            return ConversationResponse(_response_text(response))
+
+    def _send_conversation(
+        self,
+        message: str,
+        *,
+        images: Sequence[LocalImage] | None = None,
+    ) -> Any:
+        """Send an ordinary message directly to the configured model."""
+        kwargs: dict[str, Any] = {"thread_id": self.thread_id}
+        if images:
+            kwargs["images"] = images
+        return self.client.send_message(message, **kwargs)
 
     def remember(self, message: str) -> tuple[Memory, ...]:
         stored: list[Memory] = []
@@ -128,3 +149,8 @@ class AILApplication:
     def close(self) -> None:
         if self.owns_client:
             self.client.shutdown()
+
+
+def _response_text(response: Any) -> str:
+    text = getattr(response, "text", response)
+    return text if isinstance(text, str) else str(text)

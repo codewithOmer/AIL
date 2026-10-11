@@ -14,6 +14,7 @@ from interfaces.planning import (
     StepResult,
     StepStatus,
 )
+from interfaces.conversation import ConversationResponse
 
 import main
 
@@ -76,6 +77,22 @@ class TestMain(unittest.TestCase):
         )
         self.assertTrue(application.closed)
         printer.assert_called_once_with("AIL: verified task completed")
+
+    def test_oi_mode_prints_conversation_response_without_task_report(self) -> None:
+        application = FakeApplication()
+        application.handle = lambda message: ConversationResponse("Hi there")
+        with (
+            patch.object(AILApplication, "create", return_value=application),
+            patch(
+                "builtins.input",
+                side_effect=["hello", "quit"],
+            ),
+            patch("builtins.print") as printer,
+        ):
+            main.run_oi_mode()
+
+        self.assertTrue(application.closed)
+        printer.assert_called_once_with("AIL: Hi there")
 
     def test_voice_mode_reports_pipeline_errors_and_closes_application(self) -> None:
         application = FakeApplication()

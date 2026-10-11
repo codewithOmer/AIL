@@ -10,6 +10,7 @@ from interfaces.audio_input import AudioInput
 from interfaces.speech import AudioPlayer, SpeechSynthesizer, SynthesizedSpeech
 from interfaces.transcription import Transcriber
 from core.reporting import report_text
+from interfaces.conversation import ConversationResponse
 
 
 class TextApplication(Protocol):
@@ -27,6 +28,8 @@ def response_text(result: object) -> str:
     """Convert the existing application result into concise speech text."""
     if isinstance(result, tuple):
         return f"Remembered {len(result)} item" + ("." if len(result) == 1 else "s.")
+    if isinstance(result, ConversationResponse):
+        return result.text
 
     return report_text(result)
 

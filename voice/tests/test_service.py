@@ -10,6 +10,7 @@ from voice.service import VoiceService, response_text
 from interfaces.audio_input import AudioInput
 from interfaces.speech import AudioPlayer, SpeechSynthesizer, SynthesizedSpeech
 from interfaces.transcription import Transcriber, Transcription
+from interfaces.conversation import ConversationResponse
 from interfaces.planning import ExecutionReport, Goal
 from interfaces.planning import StepFailureKind, StepResult, StepStatus
 
@@ -106,6 +107,7 @@ class TestVoiceService(unittest.TestCase):
         self.assertEqual(response_text((object(),)), "Remembered 1 item.")
         failed = ExecutionReport(goal=Goal("goal"), passed=False, steps=())
         self.assertEqual(response_text(failed), "task failed (verification failure)")
+        self.assertEqual(response_text(ConversationResponse("hello")), "hello")
 
     def test_response_text_preserves_transport_failure_context(self) -> None:
         failed = ExecutionReport(

@@ -466,9 +466,10 @@ class FirstMatchPlanner(Planner):
                 return planner.plan(goal)
             except UnrecognizedTaskError:
                 continue
-        raise UnsupportedTaskError(
+        error = UnsupportedTaskError(
             "Unsupported task. Supported syntax: "
             "Create a file named <filename> containing <content>; or "
             "set up a project workspace <dir> with a readme containing "
             "<readme> and a config file containing <config>"
         )
+        raise error from UnrecognizedTaskError(str(error))
